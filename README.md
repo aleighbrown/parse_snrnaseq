@@ -121,20 +121,31 @@ Other notes:
 ## Run — UCL CS cluster (SGE)
 
 Follows the [frattalab/rna_seq_snakemake](https://github.com/frattalab/rna_seq_snakemake)
-pattern: `submit.sh` is itself qsub-ed and runs snakemake, which fans each rule
-out as its own `qsub` using `config/cluster.yaml`; `cluster_qsub.sh` is the
-jobscript template.
+pattern, with `config/cluster.yaml` giving per-rule resources and
+`cluster_qsub.sh` as the jobscript template.
+
+UCL does not allow a cluster job to submit further jobs, so the snakemake
+controller runs **on the login node, inside a screen session**, and fans each
+rule out as its own `qsub`. `submit.sh` is `source`d, not qsub-ed:
 
 ```bash
-snakemake -n                    # dry run first, from the login node
+snakemake reference -n -p       # dry run first
 
-qsub submit.sh                  # full run (rule all)
-qsub submit.sh reference        # build the shared Parse reference only
-qsub submit.sh all rerun        # tag the submission "all_rerun"
+screen -S parse
+source submit.sh                # full run (rule all)
+source submit.sh reference      # build the shared Parse reference only
+source submit.sh all rerun      # tag the submission "all_rerun"
+# ctrl-a d to detach; `screen -r parse` to come back
 ```
 
-Each submission gets `submissions/<timestamp>_<name>/` holding the job logs plus
-a copy of the `config.yaml` and `cluster.yaml` that produced it.
+The screen session must stay alive for the whole run — it *is* the controller.
+`submit.sh` deliberately contains no `set -e` / `set -u` / `exit`: sourced, each
+of those would act on your interactive shell and kill the session on any error.
+
+Each submission gets `submissions/<timestamp>_<name>/` holding the per-rule job
+logs, `snakemake.log` (the controller's own output, tee'd so it survives a lost
+screen session), and a copy of the `config.yaml` and `cluster.yaml` that
+produced it.
 
 `split-pipe` does **not** need to be on PATH. `mkref`, `split_pipe` and
 `split_pipe_comb` declare `conda:` as the path to the existing spipe env, and
