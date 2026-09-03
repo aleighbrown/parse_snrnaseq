@@ -1,0 +1,8 @@
+results/
+.snakemake/
+logs/
+*.log
+*.tmp.vcf.gz
+.DS_Store
+resources/
+submissions/

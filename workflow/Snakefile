@@ -1,0 +1,87 @@
+# =============================================================================
+# Parse WT Evercode (Mega kit, 16 sublibraries) -> reference-based genotype
+# demultiplexing.
+#
+#   reference     fetch FASTA + GTF -> split-pipe --mode mkref
+#     -> split-pipe --mode all      (per sublibrary: BAM + filtered barcodes)
+#          -> split-pipe --mode comb (all 16 sublibraries -> one DGE matrix)
+#     -> demux, either:
+#          cellsnp-lite -> vireo -d VCF   (call donors here), or
+#          import an assignment table made elsewhere  (demux.mode: provided)
+#     -> one per-cell donor table + per-donor summary
+#
+# Run:   snakemake -c 16 --use-conda        (or --use-singularity with Demuxafy)
+# Dry:   snakemake -n
+# Ref only:  snakemake reference -c 16
+# DAG:   snakemake --dag | dot -Tsvg > dag.svg
+# =============================================================================
+import os
+import pandas as pd
+
+configfile: "config/config.yaml"
+
+# --- sample / donor tables ---------------------------------------------------
+subs = pd.read_csv(config["sublibraries"], sep="\t", comment="#").set_index(
+    "sublibrary", drop=False
+)
+SUBLIBS = subs.index.tolist()
+
+# "vireo" = call donors here; "provided" = import an existing assignment table.
+DEMUX_MODE = config["demux"]["mode"]
+
+if DEMUX_MODE not in ("vireo", "provided"):
+    raise WorkflowError(f"demux.mode must be 'vireo' or 'provided', got {DEMUX_MODE!r}")
+
+# The vireo branch needs reference genotypes. There are none for this cohort, so
+# fail here with something readable rather than deep inside the DAG.
+if DEMUX_MODE == "vireo" and not (config.get("donor_vcfs") or config.get("reference_vcf")):
+    raise WorkflowError(
+        "demux.mode is 'vireo' but no reference genotypes are configured.\n"
+        "Set either donor_vcfs (TSV of donor_id + per-donor VCF) or "
+        "reference_vcf (one multi-sample VCF, with build_reference_vcf: false) "
+        "in config/config.yaml.\n"
+        "No VCFs are available for this cohort -- use demux.mode: 'provided'."
+    )
+
+# Optional per-donor metadata, joined onto the per-cell table on donor_id.
+DONOR_META = config.get("donor_metadata")
+
+wildcard_constraints:
+    sublib="|".join(SUBLIBS),
+
+# --- helpers -----------------------------------------------------------------
+def _fq(sublib, col):
+    """Resolve a FASTQ path: relative entries hang off config['fastq_dir']."""
+    p = subs.loc[sublib, col]
+    return p if os.path.isabs(p) else os.path.join(config["fastq_dir"], p)
+
+def fq1(wc): return _fq(wc.sublib, "fq1")
+def fq2(wc): return _fq(wc.sublib, "fq2")
+
+def nthreads(rule_name):
+    """Threads for one rule. Must equal that rule's '-pe smp N' in
+    config/cluster.yaml -- SGE reserves tmem/h_vmem per slot."""
+    t = config["threads"]
+    if isinstance(t, int):          # a bare `threads: 16` still works
+        return t
+    return t.get(rule_name, t["default"])
+
+# --- targets -----------------------------------------------------------------
+# Target rules do no work; never submit them as cluster jobs.
+localrules: all, reference, donor_manifest
+
+rule all:
+    input:
+        "results/splitpipe/combined/" + config["splitpipe"]["cell_meta"],
+        "results/demux/donor_assignments.all_sublibraries.tsv",
+        "results/demux/demux_summary.tsv",
+
+include: "rules/reference.smk"      # genome FASTA/GTF -> split-pipe mkref
+include: "rules/parse.smk"          # split-pipe all + comb
+
+if DEMUX_MODE == "vireo":
+    include: "rules/genotypes.smk"  # per-donor VCFs -> merged SNP panel
+    include: "rules/demux.smk"      # cellsnp-lite + vireo
+
+include: "rules/aggregate.smk"      # final assignment table + summary
+

@@ -1,0 +1,38 @@
+# NYGC WGS donor metadata for this cohort, carried over from the source
+# metadata. PROVENANCE UNVERIFIED -- check against the original before using.
+#
+# This file is NOT wired into the pipeline. It cannot be: these CGND-HDA-*
+# IDs have no crosswalk to the pathology numbers (P89/08, ...) that the
+# demultiplexing actually used, and no VCFs are available on this system.
+# It is kept so the diagnosis/mutation information is not lost. Once you get a
+# CGND <-> pathology-number crosswalk, fold these columns into
+# config/donor_metadata.tsv via the `nygc_id` column.
+#
+# The other 13 of the 36 pooled donors had no DNA in the source metadata:
+#   5 Control, 5 FTLD-TDPA, 2 FTLD-TDPB, 1 FTLD-TDPC.
+# They were previously represented by placeholder rows (noDNA-*) with invented
+# IDs and fake VCF paths; those have been removed as they were not real records.
+nygc_id	path_diag	mutation	external_subject_id	sort_date
+CGND-HDA-02808	FTLD-TDPA	C9orf72	PF-UCL-95	04-Aug
+CGND-HDA-02789	FTLD-TDPA		PF-UCL-76	06-Aug
+CGND-HDA-02780	FTLD-TDPA	GRN_Q130fs	PF-UCL-67	07-Aug
+CGND-HDA-02778	FTLD-TDPA		PF-UCL-65	13-Aug
+CGND-HDA-02786	FTLD-TDPA	GRN_C31fs	PF-UCL-73	13-Aug
+CGND-HDA-02800	FTLD-TDPC		PF-UCL-87	14-Aug
+CGND-HDA-02805	FTLD-TDPA	C9orf72	PF-UCL-92	14-Aug
+CGND-HDA-02791	FTLD-TDPB		PF-UCL-78	18-Aug
+CGND-HDA-02792	FTLD-TDPB		PF-UCL-79	18-Aug
+CGND-HDA-02793	FTLD-TDPB		PF-UCL-80	19-Aug
+CGND-HDA-02782	FTLD-TDPA	GRN_C31fs	PF-UCL-69	19-Aug
+CGND-HDA-02784	FTLD-TDPA	TBK1	PF-UCL-71	20-Aug
+CGND-HDA-02785	FTLD-TDPA	GRN_C31fs	PF-UCL-72	20-Aug
+CGND-HDA-02787	FTLD-TDPA	TBK1	PF-UCL-74	02-Sep
+CGND-HDA-02794	FTLD-TDPC		PF-UCL-81	02-Sep
+CGND-HDA-02804	FTLD-TDPA	GRN_C31fs/C9orf72	PF-UCL-91	19-Sep
+CGND-HDA-02807	FTLD-TDPA	C9orf72	PF-UCL-94	19-Sep
+CGND-HDA-02795	FTLD-TDPC		PF-UCL-82	22-Sep
+CGND-HDA-02790	FTLD-TDPA	GRN_R493X	PF-UCL-77	22-Sep
+CGND-HDA-02798	FTLD-TDPC		PF-UCL-85	23-Sep
+CGND-HDA-02799	FTLD-TDPC		PF-UCL-86	23-Sep
+CGND-HDA-02796	FTLD-TDPC		PF-UCL-83	25-Sep
+CGND-HDA-02781	FTLD-TDPA		PF-UCL-68	25-Sep

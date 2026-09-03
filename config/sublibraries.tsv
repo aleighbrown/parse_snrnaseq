@@ -1,0 +1,17 @@
+sublibrary	fq1	fq2
+ParseFANS1	ParseFANS1_R1_001.fastq.gz	ParseFANS1_R2_001.fastq.gz
+ParseFANS2	ParseFANS2_R1_001.fastq.gz	ParseFANS2_R2_001.fastq.gz
+ParseFANS3	ParseFANS3_R1_001.fastq.gz	ParseFANS3_R2_001.fastq.gz
+ParseFANS4	ParseFANS4_R1_001.fastq.gz	ParseFANS4_R2_001.fastq.gz
+ParseFANS5	ParseFANS5_R1_001.fastq.gz	ParseFANS5_R2_001.fastq.gz
+ParseFANS6	ParseFANS6_R1_001.fastq.gz	ParseFANS6_R2_001.fastq.gz
+ParseFANS7	ParseFANS7_R1_001.fastq.gz	ParseFANS7_R2_001.fastq.gz
+ParseFANS8	ParseFANS8_R1_001.fastq.gz	ParseFANS8_R2_001.fastq.gz
+ParseFANS9	ParseFANS9_R1_001.fastq.gz	ParseFANS9_R2_001.fastq.gz
+ParseFANS10	ParseFANS10_R1_001.fastq.gz	ParseFANS10_R2_001.fastq.gz
+ParseFANS11	ParseFANS11_R1_001.fastq.gz	ParseFANS11_R2_001.fastq.gz
+ParseFANS12	ParseFANS12_R1_001.fastq.gz	ParseFANS12_R2_001.fastq.gz
+ParseFANS13	ParseFANS13_R1_001.fastq.gz	ParseFANS13_R2_001.fastq.gz
+ParseFANS14	ParseFANS14_R1_001.fastq.gz	ParseFANS14_R2_001.fastq.gz
+ParseFANS15	ParseFANS15_R1_001.fastq.gz	ParseFANS15_R2_001.fastq.gz
+ParseFANS16	ParseFANS16_R1_001.fastq.gz	ParseFANS16_R2_001.fastq.gz

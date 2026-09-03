@@ -1,0 +1,163 @@
+# =============================================================================
+# Gatt FTLD-TDP FANS — Parse WT Evercode (Mega kit, 16 sublibraries)
+#
+# Stage 0  reference   FASTA + GTF -> `split-pipe --mode mkref`
+# Stage 1  split-pipe  per-sublibrary `--mode all`, then `--mode comb`
+# Stage 2  demux       cellsnp-lite -> vireo   OR   import existing assignments
+# Stage 3  aggregate   one assignment table + summary across all sublibraries
+#
+# Project dir on the cluster (run snakemake from here):
+#   /SAN/neuroscience/direct_nanopore_rna/ariana_parse
+# All relative paths below are relative to that working directory.
+# =============================================================================
+
+# --- Stage 0: genome reference -----------------------------------------------
+genome:
+  # Where the built split-pipe reference lives. This is a SHARED LAB RESOURCE:
+  # built once here, reusable by any project that needs a Parse human reference.
+  # Follows the existing <type>/<species>/ convention of that tree.
+  ref_root: /SAN/vyplab/vyplab_reference_genomes/parse_ref/human
+  #   -> <ref_root>/GRCh38_gencode_v42/            the reference
+  #      <ref_root>/GRCh38_gencode_v42.mkref.done  provenance stamp
+  #      <ref_root>/_sources/                      decompressed FASTA/GTF
+  # Set to null to build into the project's own resources/genomes/ instead.
+
+  # Point at an existing split-pipe reference to skip building entirely. Set
+  # this in downstream projects once the shared reference above exists.
+  prebuilt_dir: null
+
+  # One entry per species; two or more entries build a single mixed-species
+  # reference. Give each file as a local path (`fasta:` / `gtf:`) or a URL to
+  # download (`fasta_url:` / `gtf_url:`).
+  #
+  # An uncompressed local file is read where it lies. A .gz is decompressed once
+  # into <ref_root>/_sources/ because mkref needs plain text. Every input is
+  # wrapped in ancient(), so once the reference exists no source timestamp can
+  # trigger a rebuild -- delete the directory to force one.
+  #
+  # GENCODE contigs are chr1,chr2,...,chrM. Donor VCFs must match, or set
+  # `rename_chrs` below.
+  assemblies:
+    - name: GRCh38_gencode_v42
+      fasta: /SAN/vyplab/vyplab_reference_genomes/sequence/human/gencode/GRCh38.primary_assembly.genome.fa
+      gtf: /SAN/vyplab/vyplab_reference_genomes/annotation/human/GRCh38/gencode.v42.annotation.sorted.gtf.gz
+      # fasta_url: https://ftp.ensembl.org/pub/release-114/fasta/homo_sapiens/dna/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz
+      # gtf_url:   https://ftp.ensembl.org/pub/release-114/gtf/homo_sapiens/Homo_sapiens.GRCh38.114.gtf.gz
+
+  # Extra flags passed verbatim to `split-pipe --mode mkref` (e.g. --sparse).
+  mkref_extra: ""
+  # A human reference needs a lot of RAM and time; tune for your scheduler.
+  mkref_mem_mb: 64000
+  mkref_runtime: 480        # minutes
+
+# --- Stage 1: sublibraries / FASTQ -------------------------------------------
+# fq1/fq2 in sublibraries.tsv are relative to this (absolute paths used as-is).
+fastq_dir: /SAN/neuroscience/direct_nanopore_rna/ariana_parse/00_fastq
+sublibraries: config/sublibraries.tsv
+
+splitpipe:
+  # Kit chemistry. "auto" (or blank) omits the flag and lets split-pipe detect
+  # the kit -- safest unless you know the version. Otherwise v1/v2/v3.
+  chemistry: auto
+  # Round-1 well -> FANS sort map. Same file for every sublibrary.
+  sample_list: config/parse_sample_list.txt
+  # Paths RELATIVE to each sublibrary's split-pipe output dir.
+  bam_name: process/barcode_headAligned_anno.bam
+  cell_meta: all-well/DGE_filtered/cell_metadata.csv
+  # Column in cell_meta holding the barcode string that matches the BAM tag.
+  # The collaborator's barcodes look like "01_01_67__sParseFANS1", i.e.
+  # <bc_wells>__s<sublibrary>, so bc_wells is the per-sublibrary form.
+  barcode_column: bc_wells
+  # Extra flags for `--mode all` (e.g. --parfile, --kit_score_skip).
+  all_extra: ""
+
+# --- Stage 2: demultiplexing -------------------------------------------------
+demux:
+  # "vireo"    run cellsnp-lite + vireo against the genotype panel
+  # "provided" skip both and import an existing per-barcode assignment table
+  mode: provided
+
+  provided:
+    # The collaborator's demuxalot+vireo result and the ONLY donor information
+    # available here: 250,219 barcodes, 34 donors (31 with pathology-number
+    # identities + 3 Vireo virtual donors that were never matched).
+    table: /SAN/neuroscience/direct_nanopore_rna/ariana_parse/resources/gatt_donor_adjust_barcode_annotations.tsv
+    # Column holding "<bc_wells>__s<sublibrary>"; split on "__s" to recover both.
+    barcode_column: barcode
+    donor_column: donor
+    sublibrary_column: sublib.x
+    # Extra columns carried through to the output table, if present.
+    keep_columns:
+      - dmux_type          # SNG / DBL from demuxalot
+      - demux_group        # high_conf_donor / only_demuxalot / likely_missing_donor
+      - vireo_donor
+      - same_donor
+      - condition          # FANS sort, from the Round-1 barcode
+      - cell_type
+      - cluster_label
+      - n_genes
+      - n_counts
+      - percent_mito
+    # 49,648 of the 250,219 rows are dmux_type == DBL / "likely_missing_donor".
+    # These are NOT doublets: they are exactly the three Vireo virtual donors
+    # (donor3 18,602 + donor33 18,088 + donor30 12,958 = 49,648), i.e. cells
+    # demuxalot called doublet because their true donor had no genotype in the
+    # panel. Dropping them would delete three entire donors, so: keep them.
+    drop_doublets: false
+
+# --- Donor metadata (optional) -----------------------------------------------
+# Joined onto the per-cell table on donor_id. Derived from the assignment table
+# itself; nygc_id / path_diag / mutation are yours to fill in. Set to null to
+# skip the join entirely.
+donor_metadata: config/donor_metadata.tsv
+
+# --- Genotype panel (ONLY used when demux.mode == "vireo") -------------------
+# NO VCFs ARE AVAILABLE FOR THIS COHORT. Both keys below are null, so the vireo
+# branch is unavailable: setting demux.mode: vireo fails immediately with an
+# explanatory error rather than part-way through the run.
+#
+# To enable it you need EITHER:
+#   donor_vcfs:    a TSV with columns donor_id, vcf (one bgzipped+indexed VCF
+#                  per donor; they get merged into reference_vcf), OR
+#   reference_vcf: one joint-genotyped multi-sample VCF, with
+#                  build_reference_vcf: false
+# The donor_id values must match the sample names inside the VCFs
+# (`bcftools query -l`); reheader with `bcftools reheader -s` if not.
+donor_vcfs: null
+reference_vcf: null
+build_reference_vcf: false
+
+# BAM tag names, for the vireo branch. VERIFY on one real BAM before scaling:
+#   samtools view <bam> | head -1
+# If reads carry no UMI tag, set umi_tag: "None" (cellsnp then counts reads).
+cell_tag: CB
+umi_tag: UB
+
+cellsnp:
+  min_maf: 0.10
+  min_count: 20
+
+vireo:
+  genotype_tag: GT
+  n_donors: 36
+
+# --- Contig naming ------------------------------------------------------------
+# Only relevant to the vireo branch: applied when building the genotype panel,
+# to make its contigs match the BAM. With the GENCODE reference above the BAM is
+# chr-prefixed; GSA-imputed VCFs are usually 1..22. old<TAB>new per line.
+rename_chrs: null   # e.g. config/chr_rename.txt
+
+# --- Resources ---------------------------------------------------------------
+# Per-rule thread counts. These MUST match the "-pe smp N" slot counts in
+# config/cluster.yaml: SGE reserves memory per slot, so a rule that asks
+# snakemake for more threads than it reserved slots will either be throttled or
+# killed for overrunning its reservation.
+threads:
+  # Rules not listed here declare no `threads:` and get 1 slot.
+  default: 1
+  mkref: 16
+  split_pipe: 16
+  split_pipe_comb: 8
+  prepare_reference_vcf: 4
+  cellsnp: 8
+  vireo: 4

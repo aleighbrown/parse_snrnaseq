@@ -1,0 +1,15 @@
+# split-pipe Round-1 sample list: <sample_name><TAB><well range(s)>
+#
+# Ariana Gatt's FANS loading scheme (Round-1 plate, filled row-major
+# A1..A12, B1..B12, ... H1..H12 -> wells 1..96):
+#
+#   wells  1-43  (A1-D7)   NeuN+ TDP+ K-   "K negative"
+#   wells 44-86  (D8-H2)   NeuN+ TDP- K+   "TDP negative"
+#   wells 87-96  (H3-H12)  NeuN+ TDP+ K+   "positive"
+#
+# All 36 donors were pooled WITHIN each sort, so this splits cells by SORT
+# only. Separating the pooled donors is what the genotype-demux stage
+# (cellsnp-lite + vireo) does.
+K_negative	A1-D7
+TDP_negative	D8-H2
+positive	H3-H12

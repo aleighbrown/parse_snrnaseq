@@ -1,0 +1,100 @@
+# Per-rule SGE resources for the UCL CS cluster, consumed by submit.sh via
+# --cluster-config as {cluster.tmem}, {cluster.h_vmem}, {cluster.h_rt} and
+# {cluster.submission_string}.
+#
+# IMPORTANT: tmem and h_vmem are PER SLOT. A rule asking for "-pe smp 16" with
+# tmem 4G reserves 16 x 4G = 64G total. Keep the smp count in submission_string
+# in step with `threads:` in config/config.yaml (currently 16) -- if they drift,
+# split-pipe will either be throttled or the job will be killed for overrunning
+# its memory reservation.
+#
+# tscratch is requested in cluster_qsub.sh (50G), which covers split-pipe's
+# temporary files.
+#
+# h_rt values are QUOTED on purpose: YAML 1.1 reads a bare 72:00:00 as
+# sexagesimal and hands qsub 259200. SGE accepts that as seconds so it happens
+# to work, but the quoted form is what you actually meant.
+
+__default__:
+    h_vmem: 4G
+    tmem:   4G
+    h_rt:   "4:00:00"
+    submission_string: " "
+
+# --- Stage 0: reference -------------------------------------------------------
+# gunzip of the GENCODE GTF into the shared _sources tree. Single-threaded.
+stage_genome_file:
+    h_vmem: 8G
+    tmem:   8G
+    h_rt:   "4:00:00"
+    submission_string: " "
+
+# The big one: STAR index build over GRCh38. 16 x 4G = 64G.
+mkref:
+    h_vmem: 4G
+    tmem:   4G
+    h_rt:   "24:00:00"
+    submission_string: "-pe smp 16 -R y"
+
+# --- Stage 1: split-pipe ------------------------------------------------------
+# One job per sublibrary; alignment + barcode calling. 16 x 4G = 64G.
+split_pipe:
+    h_vmem: 4G
+    tmem:   4G
+    h_rt:   "72:00:00"
+    submission_string: "-pe smp 16 -R y"
+
+# Merges all 16 sublibraries into one DGE matrix -- memory-bound, not CPU-bound.
+# 8 x 8G = 64G.
+split_pipe_comb:
+    h_vmem: 8G
+    tmem:   8G
+    h_rt:   "24:00:00"
+    submission_string: "-pe smp 8 -R y"
+
+barcodes_from_meta:
+    h_vmem: 4G
+    tmem:   4G
+    h_rt:   "1:00:00"
+    submission_string: " "
+
+index_bam:
+    h_vmem: 8G
+    tmem:   8G
+    h_rt:   "4:00:00"
+    submission_string: " "
+
+# --- Stage 2: demux (only reachable once VCFs exist) --------------------------
+prepare_reference_vcf:
+    h_vmem: 4G
+    tmem:   4G
+    h_rt:   "12:00:00"
+    submission_string: "-pe smp 4 -R y"
+
+# Pileup over every cell at the panel SNP sites. 8 x 4G = 32G.
+cellsnp:
+    h_vmem: 4G
+    tmem:   4G
+    h_rt:   "24:00:00"
+    submission_string: "-pe smp 8 -R y"
+
+vireo:
+    h_vmem: 8G
+    tmem:   8G
+    h_rt:   "12:00:00"
+    submission_string: "-pe smp 4 -R y"
+
+# --- Stage 3: aggregate -------------------------------------------------------
+# Both read the whole per-cell table into pandas (the provided table is 63 MB /
+# 250k rows), so give them headroom.
+aggregate_assignments:
+    h_vmem: 16G
+    tmem:   16G
+    h_rt:   "2:00:00"
+    submission_string: " "
+
+import_assignments:
+    h_vmem: 16G
+    tmem:   16G
+    h_rt:   "2:00:00"
+    submission_string: " "

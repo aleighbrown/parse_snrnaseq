@@ -1,0 +1,9 @@
+name: demux
+channels:
+  - bioconda
+  - conda-forge
+dependencies:
+  - cellsnp-lite>=1.2.3
+  - vireosnp>=0.5.8
+  - samtools>=1.18
+  - bcftools>=1.18
