@@ -24,9 +24,10 @@
 # Two or more entries build ONE mixed-species reference: split-pipe mkref takes
 # parallel --genome_name / --fasta / --genes lists.
 #
-# NOTE: split-pipe is Parse's proprietary binary and must be on PATH -- not
-# conda-installable, so no `conda:` directive. A human reference needs a lot of
-# RAM (~64 GB) and an hour or two.
+# NOTE: split-pipe runs from the existing environment named by
+# config.conda_envs.spipe -- Snakemake activates it per rule, so split-pipe does
+# not need to be on PATH when you submit. A human reference needs a lot of RAM
+# (~64 GB) and an hour or two.
 # -----------------------------------------------------------------------------
 
 _gcfg = config["genome"]
@@ -107,6 +108,8 @@ else:
             names=" ".join(ASSEMBLIES),
             extra=_gcfg.get("mkref_extra", ""),
         threads: nthreads("mkref")
+        conda:
+            config["conda_envs"]["spipe"]
         resources:
             mem_mb=_gcfg.get("mkref_mem_mb", 64000),
             runtime=_gcfg.get("mkref_runtime", 480),   # minutes

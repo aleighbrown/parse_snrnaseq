@@ -108,8 +108,11 @@ Other notes:
 
 ## Tools
 
-- **split-pipe** — Parse Biosciences' proprietary binary (v1.9.0 here), on
-  `PATH`. Not conda-installable, so it has no conda env.
+- **split-pipe** — Parse Biosciences' proprietary binary (v1.9.0). No conda
+  recipe exists, but the rules that call it point `conda:` at the **existing**
+  environment `/SAN/vyplab/FUS_RNA/conda_envs/spipe` (`conda_envs.spipe` in
+  config). Snakemake activates it per rule — nothing is solved or rebuilt, and
+  `--conda-prefix` does not apply to it.
 - **cellsnp-lite** + **vireo** — conda (`workflow/envs/demux.yaml`) or the
   [Demuxafy](https://demultiplexing-doublet-detecting-docs.readthedocs.io/)
   container.
@@ -123,7 +126,6 @@ out as its own `qsub` using `config/cluster.yaml`; `cluster_qsub.sh` is the
 jobscript template.
 
 ```bash
-conda activate /SAN/vyplab/FUS_RNA/conda_envs/spipe   # split-pipe on PATH
 snakemake -n                    # dry run first, from the login node
 
 qsub submit.sh                  # full run (rule all)
@@ -134,10 +136,10 @@ qsub submit.sh all rerun        # tag the submission "all_rerun"
 Each submission gets `submissions/<timestamp>_<name>/` holding the job logs plus
 a copy of the `config.yaml` and `cluster.yaml` that produced it.
 
-`split-pipe` must be on PATH **inside the jobs**, not just at the login node.
-Both `submit.sh` and `cluster_qsub.sh` use `#$ -V`, so the environment active at
-qsub time is exported — activate the spipe env before submitting (or uncomment
-the `source activate` line in `submit.sh`).
+`split-pipe` does **not** need to be on PATH. `mkref`, `split_pipe` and
+`split_pipe_comb` declare `conda:` as the path to the existing spipe env, and
+Snakemake activates it for those jobs. Only snakemake itself has to be available
+when you submit.
 
 ### Resources
 

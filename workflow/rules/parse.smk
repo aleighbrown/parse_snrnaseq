@@ -6,8 +6,10 @@
 #   --mode comb  merge all 16 sublibraries into one combined DGE matrix
 #
 # NOTE: split-pipe is Parse's proprietary binary (register + download from
-# Parse Biosciences). It is expected on PATH; it is not conda-installable, so
-# there is no `conda:` directive here.
+# Parse Biosciences) and has no conda recipe, but it IS already installed in an
+# environment. Both rules below point `conda:` at that existing env
+# (config.conda_envs.spipe), which Snakemake activates per rule -- it is not
+# built or solved, and split-pipe need not be on PATH at submission time.
 # -----------------------------------------------------------------------------
 
 _chem = str(config["splitpipe"].get("chemistry") or "auto").strip()
@@ -29,6 +31,8 @@ rule split_pipe:
         chem=CHEM_FLAG,
         extra=config["splitpipe"].get("all_extra", ""),
     threads: nthreads("split_pipe")
+    conda:
+        config["conda_envs"]["spipe"]
     resources:
         mem_mb=64000,
         runtime=1440,
@@ -64,6 +68,8 @@ rule split_pipe_comb:
         sublib_dirs=expand("results/splitpipe/{sublib}", sublib=SUBLIBS),
         outdir="results/splitpipe/combined",
     threads: nthreads("split_pipe_comb")
+    conda:
+        config["conda_envs"]["spipe"]
     resources:
         mem_mb=64000,
         runtime=480,

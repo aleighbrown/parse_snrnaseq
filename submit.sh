@@ -5,10 +5,9 @@
 #   qsub submit.sh reference          # build the shared Parse reference only
 #   qsub submit.sh reference gencode  # ... and tag this submission "gencode"
 #
-# split-pipe must be on PATH inside the JOBS, not just here. Both this script
-# and cluster_qsub.sh use `#$ -V`, so the environment active at qsub time is
-# exported to the jobs -- activate the spipe env below (or before qsub) and
-# split-pipe is available throughout.
+# split-pipe does NOT need to be on PATH: the rules that call it declare
+# `conda: <path to the spipe env>` (config.conda_envs.spipe), which Snakemake
+# activates per job. Only snakemake itself has to be available here.
 
 #$ -S /bin/bash
 
@@ -23,10 +22,9 @@
 
 set -euo pipefail
 
-# Env providing split-pipe (v1.9.0). snakemake must also be importable -- either
-# from this env or from one already active when you qsub.
-SPIPE_ENV="/SAN/vyplab/FUS_RNA/conda_envs/spipe"
-# source activate "${SPIPE_ENV}"
+# Env providing snakemake (7.x -- --cluster-config is gone in 8). The spipe env
+# is not activated here; the split-pipe rules bring it in themselves.
+# source activate /path/to/snakemake_env
 
 TARGET="${1:-all}"
 
