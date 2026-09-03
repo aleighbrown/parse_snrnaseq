@@ -31,18 +31,18 @@ stage_genome_file:
 
 # The big one: STAR index build over GRCh38. 16 x 4G = 64G.
 mkref:
-    h_vmem: 4G
-    tmem:   4G
+    h_vmem: 16G
+    tmem:   16G
     h_rt:   "24:00:00"
-    submission_string: "-pe smp 16 -R y"
+    submission_string: "-pe smp 4 -R y"
 
 # --- Stage 1: split-pipe ------------------------------------------------------
 # One job per sublibrary; alignment + barcode calling. 16 x 4G = 64G.
 split_pipe:
-    h_vmem: 4G
-    tmem:   4G
+    h_vmem: 16G
+    tmem:   16G
     h_rt:   "72:00:00"
-    submission_string: "-pe smp 16 -R y"
+    submission_string: "-pe smp 4 -R y"
 
 # Merges all 16 sublibraries into one DGE matrix -- memory-bound, not CPU-bound.
 # 8 x 8G = 64G.
