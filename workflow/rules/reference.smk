@@ -24,10 +24,10 @@
 # Two or more entries build ONE mixed-species reference: split-pipe mkref takes
 # parallel --genome_name / --fasta / --genes lists.
 #
-# NOTE: split-pipe runs from the existing environment named by
-# config.conda_envs.spipe -- Snakemake activates it per rule, so split-pipe does
-# not need to be on PATH when you submit. A human reference needs a lot of RAM
-# (~64 GB) and an hour or two.
+# NOTE: split-pipe runs from the existing env at config.conda_envs.spipe, which
+# the shell block activates itself (see the comment in the rule for why NOT the
+# `conda:` directive). Measured on GRCh38 + GENCODE v42: 1h15m wall, 26 GB peak
+# RSS, cpu_eff 0.08 -- STAR's genomeGenerate is mostly single-threaded here.
 # -----------------------------------------------------------------------------
 
 _gcfg = config["genome"]
@@ -107,9 +107,8 @@ else:
         params:
             names=" ".join(ASSEMBLIES),
             extra=_gcfg.get("mkref_extra", ""),
+            spipe=config["conda_envs"]["spipe"],
         threads: nthreads("mkref")
-        conda:
-            config["conda_envs"]["spipe"]
         resources:
             mem_mb=_gcfg.get("mkref_mem_mb", 64000),
             runtime=_gcfg.get("mkref_runtime", 480),   # minutes
@@ -118,6 +117,18 @@ else:
         shell:
             r"""
             set -euo pipefail
+            # Activate the existing split-pipe env EXPLICITLY rather than via
+            # Snakemake's `conda:` directive. Snakemake 7 treats any non-YAML
+            # conda value as an environment NAME, and when recording provenance
+            # runs `conda env export --name <value>`; conda cannot resolve a
+            # path as a name, so that fails AFTER the rule's work is done, marks
+            # the job failed, and deletes the output. Doing it here keeps
+            # snakemake's conda bookkeeping out of the picture entirely.
+            set +u
+            source "$(conda info --base)/etc/profile.d/conda.sh"
+            conda activate "{params.spipe}"
+            set -u
+
             mkdir -p "$(dirname {output.genome_dir})"
             split-pipe \
                 --mode mkref \

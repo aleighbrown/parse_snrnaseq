@@ -7,9 +7,9 @@
 #
 # NOTE: split-pipe is Parse's proprietary binary (register + download from
 # Parse Biosciences) and has no conda recipe, but it IS already installed in an
-# environment. Both rules below point `conda:` at that existing env
-# (config.conda_envs.spipe), which Snakemake activates per rule -- it is not
-# built or solved, and split-pipe need not be on PATH at submission time.
+# environment. Both rules activate config.conda_envs.spipe in their own shell
+# block -- NOT via Snakemake's `conda:` directive, which breaks on a path (see
+# the comment inside the rule). split-pipe need not be on PATH at submission.
 # -----------------------------------------------------------------------------
 
 _chem = str(config["splitpipe"].get("chemistry") or "auto").strip()
@@ -30,9 +30,8 @@ rule split_pipe:
         outdir="results/splitpipe/{sublib}",
         chem=CHEM_FLAG,
         extra=config["splitpipe"].get("all_extra", ""),
+        spipe=config["conda_envs"]["spipe"],
     threads: nthreads("split_pipe")
-    conda:
-        config["conda_envs"]["spipe"]
     resources:
         mem_mb=64000,
         runtime=1440,
@@ -41,6 +40,18 @@ rule split_pipe:
     shell:
         r"""
         set -euo pipefail
+        # Activate the existing split-pipe env EXPLICITLY rather than via
+        # Snakemake's `conda:` directive. Snakemake 7 treats any non-YAML
+        # conda value as an environment NAME, and when recording provenance
+        # runs `conda env export --name <value>`; conda cannot resolve a
+        # path as a name, so that fails AFTER the rule's work is done, marks
+        # the job failed, and deletes the output. Doing it here keeps
+        # snakemake's conda bookkeeping out of the picture entirely.
+        set +u
+        source "$(conda info --base)/etc/profile.d/conda.sh"
+        conda activate "{params.spipe}"
+        set -u
+
         split-pipe \
             --mode all \
             {params.chem} \
@@ -67,9 +78,8 @@ rule split_pipe_comb:
     params:
         sublib_dirs=expand("results/splitpipe/{sublib}", sublib=SUBLIBS),
         outdir="results/splitpipe/combined",
+        spipe=config["conda_envs"]["spipe"],
     threads: nthreads("split_pipe_comb")
-    conda:
-        config["conda_envs"]["spipe"]
     resources:
         mem_mb=64000,
         runtime=480,
@@ -78,6 +88,18 @@ rule split_pipe_comb:
     shell:
         r"""
         set -euo pipefail
+        # Activate the existing split-pipe env EXPLICITLY rather than via
+        # Snakemake's `conda:` directive. Snakemake 7 treats any non-YAML
+        # conda value as an environment NAME, and when recording provenance
+        # runs `conda env export --name <value>`; conda cannot resolve a
+        # path as a name, so that fails AFTER the rule's work is done, marks
+        # the job failed, and deletes the output. Doing it here keeps
+        # snakemake's conda bookkeeping out of the picture entirely.
+        set +u
+        source "$(conda info --base)/etc/profile.d/conda.sh"
+        conda activate "{params.spipe}"
+        set -u
+
         split-pipe \
             --mode comb \
             --sublibraries {params.sublib_dirs} \

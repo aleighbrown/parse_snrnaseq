@@ -44,10 +44,18 @@ genome:
   # wrapped in ancient(), so once the reference exists no source timestamp can
   # trigger a rebuild -- delete the directory to force one.
   #
-  # GENCODE contigs are chr1,chr2,...,chrM. Donor VCFs must match, or set
-  # `rename_chrs` below.
+  # NAMING: split-pipe rejects underscores in --genome_name and silently
+  # rewrites them (GRCh38_gencode_v42 -> GRCh38-gencode-v42). The name here is
+  # already in its preferred form so the directory matches the reference's
+  # internal run_name.
+  #
+  # CONTIGS: split-pipe prefixes every chromosome with the genome name
+  # ("mkref_chr_geno_prefix"), so this reference's contigs are
+  # GRCh38-gencode-v42_chr1, NOT chr1 -- and BAMs aligned to it will be too.
+  # Anything matching on contig name downstream (donor VCFs for the vireo
+  # branch, regtools for junctions, IGV) has to account for that prefix.
   assemblies:
-    - name: GRCh38_gencode_v42
+    - name: GRCh38-gencode-v42
       fasta: /SAN/vyplab/vyplab_reference_genomes/sequence/human/gencode/GRCh38.primary_assembly.genome.fa
       gtf: /SAN/vyplab/vyplab_reference_genomes/annotation/human/GRCh38/gencode.v42.annotation.sorted.gtf.gz
       # fasta_url: https://ftp.ensembl.org/pub/release-114/fasta/homo_sapiens/dna/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz
@@ -56,6 +64,9 @@ genome:
   # Extra flags passed verbatim to `split-pipe --mode mkref` (e.g. --sparse).
   mkref_extra: ""
   # A human reference needs a lot of RAM and time; tune for your scheduler.
+  # Measured on GRCh38 + GENCODE v42: 1h15m wall, 26 GB peak RSS, cpu_eff 0.08
+  # at 16 threads. cluster.yaml currently reserves 4 x 16G = 64G, so there is
+  # room to trim if mkref ever queues badly.
   mkref_mem_mb: 64000
   mkref_runtime: 480        # minutes
 
@@ -164,8 +175,8 @@ rename_chrs: null   # e.g. config/chr_rename.txt
 threads:
   # Rules not listed here declare no `threads:` and get 1 slot.
   default: 1
-  mkref: 16
-  split_pipe: 16
+  mkref: 4
+  split_pipe: 4
   split_pipe_comb: 8
   prepare_reference_vcf: 4
   cellsnp: 8

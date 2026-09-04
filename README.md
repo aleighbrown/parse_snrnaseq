@@ -102,17 +102,27 @@ Other notes:
   text; the uncompressed FASTA is read where it lies, no copy.
 - Two or more `assemblies` entries build a single **mixed-species** reference
   (parallel `--genome_name` / `--fasta` / `--genes` lists).
-- **Contig naming is decided here.** GENCODE gives `chr1,chr2,…,chrM`; Ensembl
-  gives `1,2,…,MT`. Whatever you pick must match any donor VCFs, or set
-  `rename_chrs`. Mismatch is the usual reason cellsnp finds ~0 cells.
+- **Contigs get the genome name as a prefix.** split-pipe's
+  `mkref_chr_geno_prefix` is on, so this reference's contigs are
+  `GRCh38-gencode-v42_chr1`, **not** `chr1` — and BAMs aligned to it will be
+  too. Anything that matches on contig name (donor VCFs for the vireo branch,
+  regtools for junction extraction, IGV) has to account for that prefix. On top
+  of the usual GENCODE `chr1` vs Ensembl `1` question.
+- **`--genome_name` cannot contain underscores.** split-pipe silently rewrites
+  them to hyphens (`GRCh38_gencode_v42` → `GRCh38-gencode-v42`), which then
+  becomes the contig prefix. The configured name is already hyphenated so the
+  directory matches the reference's internal name.
+- Measured for this build: **1h15m wall, 26 GB peak RSS**, `cpu_eff 0.08` at 16
+  threads — STAR's `genomeGenerate` is close to single-threaded here, so extra
+  slots mostly buy queue time.
 
 ## Tools
 
 - **split-pipe** — Parse Biosciences' proprietary binary (v1.9.0). No conda
-  recipe exists, but the rules that call it point `conda:` at the **existing**
-  environment `/SAN/vyplab/FUS_RNA/conda_envs/spipe` (`conda_envs.spipe` in
-  config). Snakemake activates it per rule — nothing is solved or rebuilt, and
-  `--conda-prefix` does not apply to it.
+  recipe exists; it lives in the existing env
+  `/SAN/vyplab/FUS_RNA/conda_envs/spipe` (`conda_envs.spipe` in config), which
+  the split-pipe rules activate **in their own shell block**. Deliberately not
+  via Snakemake's `conda:` directive — see below.
 - **cellsnp-lite** + **vireo** — conda (`workflow/envs/demux.yaml`) or the
   [Demuxafy](https://demultiplexing-doublet-detecting-docs.readthedocs.io/)
   container.
@@ -147,21 +157,29 @@ logs, `snakemake.log` (the controller's own output, tee'd so it survives a lost
 screen session), and a copy of the `config.yaml` and `cluster.yaml` that
 produced it.
 
-`split-pipe` does **not** need to be on PATH. `mkref`, `split_pipe` and
-`split_pipe_comb` declare `conda:` as the path to the existing spipe env, and
-Snakemake activates it for those jobs. Only snakemake itself has to be available
-when you submit.
+`split-pipe` does **not** need to be on PATH: `mkref`, `split_pipe` and
+`split_pipe_comb` activate the spipe env themselves. Only snakemake has to be
+available when you submit.
+
+> **Why not the `conda:` directive.** Snakemake 7 activates a path fine, but
+> treats any non-YAML `conda:` value as an environment *name* when recording
+> provenance, running `conda env export --name <value>`. Conda cannot resolve a
+> path as a name, so it exits 1 — *after* the rule's work is done. That throws
+> in `persistence.finished()`, the job is marked failed, and Snakemake deletes
+> its output. With a `directory()` output that means a completed 75-minute
+> reference build gets erased. The rules activate the env in the shell block
+> instead, which keeps Snakemake's conda bookkeeping out of it entirely.
 
 ### Resources
 
 `config/cluster.yaml` sets `tmem` / `h_vmem` / `h_rt` / `submission_string` per
-rule. **`tmem` and `h_vmem` are per slot** on this cluster, so `-pe smp 16` with
-`tmem: 4G` reserves 64 GB total:
+rule. **`tmem` and `h_vmem` are per slot** on this cluster, so `-pe smp 4` with
+`tmem: 16G` reserves 64 GB total:
 
 | rule | slots | tmem | total | h_rt |
 |---|---|---|---|---|
-| `mkref` | 16 | 4G | 64G | 24:00:00 |
-| `split_pipe` | 16 | 4G | 64G | 72:00:00 |
+| `mkref` | 4 | 16G | 64G | 24:00:00 |
+| `split_pipe` | 4 | 16G | 64G | 72:00:00 |
 | `split_pipe_comb` | 8 | 8G | 64G | 24:00:00 |
 | `cellsnp` | 8 | 4G | 32G | 24:00:00 |
 | `vireo` | 4 | 8G | 32G | 12:00:00 |
