@@ -8,16 +8,16 @@
 
 rule cellsnp:
     input:
-        bam="results/splitpipe/{sublib}/" + config["splitpipe"]["bam_name"],
-        bai="results/splitpipe/{sublib}/" + config["splitpipe"]["bam_name"] + ".bai",
-        barcodes="results/splitpipe/{sublib}/barcodes.tsv",
+        bam=RESULTS + "/splitpipe/{sublib}/" + config["splitpipe"]["bam_name"],
+        bai=RESULTS + "/splitpipe/{sublib}/" + config["splitpipe"]["bam_name"] + ".bai",
+        barcodes=RESULTS + "/splitpipe/{sublib}/barcodes.tsv",
         ref=REF_VCF,
         ref_tbi=REF_VCF + ".tbi",
     output:
         # cellsnp-lite writes a directory of outputs; this is its base VCF.
-        vcf="results/cellsnp/{sublib}/cellSNP.base.vcf.gz",
+        vcf=RESULTS + "/cellsnp/{sublib}/cellSNP.base.vcf.gz",
     params:
-        outdir="results/cellsnp/{sublib}",
+        outdir=RESULTS + "/cellsnp/{sublib}",
         min_maf=config["cellsnp"]["min_maf"],
         min_count=config["cellsnp"]["min_count"],
         cell_tag=config["cell_tag"],
@@ -44,14 +44,14 @@ rule cellsnp:
 
 rule vireo:
     input:
-        cellsnp="results/cellsnp/{sublib}/cellSNP.base.vcf.gz",
+        cellsnp=RESULTS + "/cellsnp/{sublib}/cellSNP.base.vcf.gz",
         ref=REF_VCF,
     output:
-        assign="results/vireo/{sublib}/donor_ids.tsv",
-        summary="results/vireo/{sublib}/summary.tsv",
+        assign=RESULTS + "/vireo/{sublib}/donor_ids.tsv",
+        summary=RESULTS + "/vireo/{sublib}/summary.tsv",
     params:
-        indir="results/cellsnp/{sublib}",
-        outdir="results/vireo/{sublib}",
+        indir=RESULTS + "/cellsnp/{sublib}",
+        outdir=RESULTS + "/vireo/{sublib}",
         gt_tag=config["vireo"]["genotype_tag"],
     threads: nthreads("vireo")
     conda:

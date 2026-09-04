@@ -46,6 +46,10 @@ if DEMUX_MODE == "vireo" and not (config.get("donor_vcfs") or config.get("refere
 # Optional per-donor metadata, joined onto the per-cell table on donor_id.
 DONOR_META = config.get("donor_metadata")
 
+# Where all pipeline outputs land. Kept out of the repo so the working tree
+# stays small; logs/ and submissions/ stay project-local.
+RESULTS = config["results_dir"].rstrip("/")
+
 wildcard_constraints:
     sublib="|".join(SUBLIBS),
 
@@ -68,13 +72,23 @@ def nthreads(rule_name):
 
 # --- targets -----------------------------------------------------------------
 # Target rules do no work; never submit them as cluster jobs.
-localrules: all, reference, donor_manifest
+localrules: all, reference, donor_manifest, test_sublib
+
+# Smoke test: run split-pipe on ONE sublibrary before committing all 16.
+# Everything that can go wrong here (chemistry, well->sort map, reference,
+# barcode format, resources) is systematic and identical across sublibraries,
+# so one job proves the other fifteen.  `source submit.sh test_sublib`
+TEST_SUBLIB = config.get("test_sublibrary") or SUBLIBS[0]
+
+rule test_sublib:
+    input:
+        RESULTS + "/splitpipe/" + TEST_SUBLIB + "/" + config["splitpipe"]["cell_meta"],
 
 rule all:
     input:
-        "results/splitpipe/combined/" + config["splitpipe"]["cell_meta"],
-        "results/demux/donor_assignments.all_sublibraries.tsv",
-        "results/demux/demux_summary.tsv",
+        RESULTS + "/splitpipe/combined/" + config["splitpipe"]["cell_meta"],
+        RESULTS + "/demux/donor_assignments.all_sublibraries.tsv",
+        RESULTS + "/demux/demux_summary.tsv",
 
 include: "rules/reference.smk"      # genome FASTA/GTF -> split-pipe mkref
 include: "rules/parse.smk"          # split-pipe all + comb

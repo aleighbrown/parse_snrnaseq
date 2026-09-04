@@ -24,10 +24,10 @@ rule split_pipe:
         genome=GENOME_DIR,
         sample_list=config["splitpipe"]["sample_list"],
     output:
-        bam="results/splitpipe/{sublib}/" + config["splitpipe"]["bam_name"],
-        cell_meta="results/splitpipe/{sublib}/" + config["splitpipe"]["cell_meta"],
+        bam=RESULTS + "/splitpipe/{sublib}/" + config["splitpipe"]["bam_name"],
+        cell_meta=RESULTS + "/splitpipe/{sublib}/" + config["splitpipe"]["cell_meta"],
     params:
-        outdir="results/splitpipe/{sublib}",
+        outdir=RESULTS + "/splitpipe/{sublib}",
         chem=CHEM_FLAG,
         extra=config["splitpipe"].get("all_extra", ""),
         spipe=config["conda_envs"]["spipe"],
@@ -70,14 +70,14 @@ rule split_pipe:
 rule split_pipe_comb:
     input:
         cell_meta=expand(
-            "results/splitpipe/{sublib}/" + config["splitpipe"]["cell_meta"],
+            RESULTS + "/splitpipe/{sublib}/" + config["splitpipe"]["cell_meta"],
             sublib=SUBLIBS,
         ),
     output:
-        cell_meta="results/splitpipe/combined/" + config["splitpipe"]["cell_meta"],
+        cell_meta=RESULTS + "/splitpipe/combined/" + config["splitpipe"]["cell_meta"],
     params:
-        sublib_dirs=expand("results/splitpipe/{sublib}", sublib=SUBLIBS),
-        outdir="results/splitpipe/combined",
+        sublib_dirs=expand(RESULTS + "/splitpipe/{sublib}", sublib=SUBLIBS),
+        outdir=RESULTS + "/splitpipe/combined",
         spipe=config["conda_envs"]["spipe"],
     threads: nthreads("split_pipe_comb")
     resources:
@@ -113,9 +113,9 @@ rule split_pipe_comb:
 # name is set in config (splitpipe.barcode_column) -- verify it once.
 rule barcodes_from_meta:
     input:
-        cell_meta="results/splitpipe/{sublib}/" + config["splitpipe"]["cell_meta"],
+        cell_meta=RESULTS + "/splitpipe/{sublib}/" + config["splitpipe"]["cell_meta"],
     output:
-        barcodes="results/splitpipe/{sublib}/barcodes.tsv",
+        barcodes=RESULTS + "/splitpipe/{sublib}/barcodes.tsv",
     params:
         col=config["splitpipe"]["barcode_column"],
     conda:
@@ -127,9 +127,9 @@ rule barcodes_from_meta:
 # Index the BAM if split-pipe did not.
 rule index_bam:
     input:
-        bam="results/splitpipe/{sublib}/" + config["splitpipe"]["bam_name"],
+        bam=RESULTS + "/splitpipe/{sublib}/" + config["splitpipe"]["bam_name"],
     output:
-        bai="results/splitpipe/{sublib}/" + config["splitpipe"]["bam_name"] + ".bai",
+        bai=RESULTS + "/splitpipe/{sublib}/" + config["splitpipe"]["bam_name"] + ".bai",
     conda:
         "../envs/bcftools.yaml"
     shell:

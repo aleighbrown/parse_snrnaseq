@@ -16,11 +16,11 @@ if DEMUX_MODE == "vireo":
 
     rule aggregate_assignments:
         input:
-            assigns=expand("results/vireo/{sublib}/donor_ids.tsv", sublib=SUBLIBS),
+            assigns=expand(RESULTS + "/vireo/{sublib}/donor_ids.tsv", sublib=SUBLIBS),
             donor_meta=_meta_in,
         output:
-            table="results/demux/donor_assignments.all_sublibraries.tsv",
-            summary="results/demux/demux_summary.tsv",
+            table=RESULTS + "/demux/donor_assignments.all_sublibraries.tsv",
+            summary=RESULTS + "/demux/demux_summary.tsv",
         params:
             sublibs=SUBLIBS,
         conda:
@@ -35,9 +35,9 @@ else:
             table=config["demux"]["provided"]["table"],
             donor_meta=_meta_in,
         output:
-            table="results/demux/donor_assignments.all_sublibraries.tsv",
-            summary="results/demux/demux_summary.tsv",
-            manifest="results/demux/donor_manifest.tsv",
+            table=RESULTS + "/demux/donor_assignments.all_sublibraries.tsv",
+            summary=RESULTS + "/demux/demux_summary.tsv",
+            manifest=RESULTS + "/demux/donor_manifest.tsv",
         params:
             provided=config["demux"]["provided"],
             sublibs=SUBLIBS,
@@ -52,4 +52,4 @@ else:
 # Regenerate the derived donor table: `snakemake donor_manifest -c1`
 rule donor_manifest:
     input:
-        "results/demux/donor_manifest.tsv",
+        RESULTS + "/demux/donor_manifest.tsv",

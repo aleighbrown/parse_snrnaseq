@@ -70,10 +70,17 @@ genome:
   mkref_mem_mb: 64000
   mkref_runtime: 480        # minutes
 
+# --- Where output goes --------------------------------------------------------
+# All pipeline results. Deliberately outside the git repo. logs/ and
+# submissions/ stay next to the workflow, in the project dir you run from.
+results_dir: /SAN/neuroscience/direct_nanopore_rna/ariana_parse/spipe_jh_donor_annotations
+
 # --- Stage 1: sublibraries / FASTQ -------------------------------------------
 # fq1/fq2 in sublibraries.tsv are relative to this (absolute paths used as-is).
 fastq_dir: /SAN/neuroscience/direct_nanopore_rna/ariana_parse/00_fastq
 sublibraries: config/sublibraries.tsv
+# Which sublibrary the `test_sublib` smoke-test target runs on.
+test_sublibrary: ParseFANS1
 
 splitpipe:
   # Kit chemistry. "auto" (or blank) omits the flag and lets split-pipe detect
