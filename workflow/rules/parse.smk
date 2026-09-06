@@ -27,10 +27,18 @@ if _chem.lower() in ("", "auto", "none", "null"):
     )
 CHEM_FLAG = f"--chemistry {_chem}"
 
-# Kit is optional: split-pipe's kit_source defaults to 'automatic'. Set
-# splitpipe.kit only if detection picks the wrong one for the Mega kit.
+# --kit is required too. ('kit_source: automatic' in split-pipe's parameter
+# dump applies to mkref, where the kit is forced to 'custom' -- it does not mean
+# --mode all can infer it.)
 _kit = str(config["splitpipe"].get("kit") or "").strip()
-KIT_FLAG = f"--kit {_kit}" if _kit else ""
+if not _kit:
+    raise WorkflowError(
+        "splitpipe.kit is not set.\n"
+        "split-pipe v1.9.0 exits with 'Problem: Kit must be specified'.\n"
+        "Run `split-pipe --kit_list` (spipe env active) to list the kits your "
+        "build accepts, then set splitpipe.kit in config/config.yaml."
+    )
+KIT_FLAG = f"--kit {_kit}"
 
 
 rule split_pipe:

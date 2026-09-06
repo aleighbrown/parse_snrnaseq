@@ -87,9 +87,11 @@ splitpipe:
   # no --chemistry it exits immediately with "Problem: No chemistry set".
   # v3 confirmed for this run (Evercode WT Mega, Gatt FANS sorts).
   chemistry: v3
-  # Optional. split-pipe's kit_source is 'automatic', so leave blank unless
-  # detection picks the wrong kit for this Mega run.
-  kit: 
+  # REQUIRED, same as chemistry: split-pipe exits with "Kit must be specified".
+  # List the values your build accepts with `split-pipe --kit_list`.
+  # WT_mega = 96 samples, plate (8,12), chemistry v1-v4. The 8x12 round-1 plate
+  # is what config/parse_sample_list.txt's A1-D7 / D8-H2 / H3-H12 ranges assume.
+  kit: WT_mega
   # Round-1 well -> FANS sort map. Same file for every sublibrary.
   sample_list: config/parse_sample_list.txt
   # Paths RELATIVE to each sublibrary's split-pipe output dir.
