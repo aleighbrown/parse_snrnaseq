@@ -12,9 +12,25 @@
 # the comment inside the rule). split-pipe need not be on PATH at submission.
 # -----------------------------------------------------------------------------
 
-_chem = str(config["splitpipe"].get("chemistry") or "auto").strip()
-# "auto"/blank -> omit the flag entirely and let split-pipe detect the kit.
-CHEM_FLAG = "" if _chem.lower() in ("auto", "none", "") else f"--chemistry {_chem}"
+# split-pipe v1.9.0 does NOT auto-detect chemistry for --mode all: with no
+# --chemistry it exits instantly with "Problem: No chemistry set". Fail here,
+# while building the DAG, rather than letting 16 jobs each discover it.
+_chem = str(config["splitpipe"].get("chemistry") or "").strip()
+if _chem.lower() in ("", "auto", "none", "null"):
+    raise WorkflowError(
+        "splitpipe.chemistry is not set.\n"
+        "split-pipe v1.9.0 has no auto-detection for --mode all; it exits with "
+        "'Problem: No chemistry set'.\n"
+        "Run `split-pipe --explain` (spipe env active) to list the chemistry and "
+        "kit values your build accepts, then set splitpipe.chemistry in "
+        "config/config.yaml."
+    )
+CHEM_FLAG = f"--chemistry {_chem}"
+
+# Kit is optional: split-pipe's kit_source defaults to 'automatic'. Set
+# splitpipe.kit only if detection picks the wrong one for the Mega kit.
+_kit = str(config["splitpipe"].get("kit") or "").strip()
+KIT_FLAG = f"--kit {_kit}" if _kit else ""
 
 
 rule split_pipe:
@@ -29,6 +45,7 @@ rule split_pipe:
     params:
         outdir=RESULTS + "/splitpipe/{sublib}",
         chem=CHEM_FLAG,
+        kit=KIT_FLAG,
         extra=config["splitpipe"].get("all_extra", ""),
         spipe=config["conda_envs"]["spipe"],
     threads: nthreads("split_pipe")
@@ -55,6 +72,7 @@ rule split_pipe:
         split-pipe \
             --mode all \
             {params.chem} \
+            {params.kit} \
             --genome_dir {input.genome} \
             --fq1 {input.fq1} \
             --fq2 {input.fq2} \
