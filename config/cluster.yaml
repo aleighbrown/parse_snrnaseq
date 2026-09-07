@@ -37,11 +37,54 @@ mkref:
     submission_string: "-pe smp 4 -R y"
 
 # --- Stage 1: split-pipe ------------------------------------------------------
-# One job per sublibrary; alignment + barcode calling. 16 x 4G = 64G.
-split_pipe:
+# Used when splitpipe.split_steps is TRUE: each sublibrary becomes three jobs.
+# Sizing comes from ParseFANS1's process/mem_profile.txt (1.69e9 reads at 4
+# threads) -- see the header of workflow/rules/parse.smk. Peak RSS measured was
+# pre 11.3G, align 17.9G, post-onward 4.3G, so the old flat 64G was ~3.6x more
+# memory than any step actually touched.
+#
+# WALLTIMES: ParseFANS1 is the 3rd SMALLEST of the 16 sublibraries (102 GB of
+# FASTQ against a 122 GB mean and ParseFANS11's 196 GB). Everything below is
+# sized for the 1.92x worst case, plus slack for I/O contention when all 16
+# run concurrently -- ParseFANS1's timings alone would be far too tight.
+
+# inqc + pre. 5.73 h at 4 threads on the smallest sublibrary. 8 x 4G = 32G.
+split_pipe_pre:
+    h_vmem: 4G
+    tmem:   4G
+    h_rt:   "24:00:00"
+    submission_string: "-pe smp 8 -R y"
+
+# align. STAR, and the only step that saturates its cores (3.87 of 4). 9.71 h
+# at 4 threads, so expect ~5 h at 8. 8 slots rather than 16 on purpose: with 16,
+# running several sublibraries at once needs hundreds of slots and the jobs sit
+# in the queue instead of running -- 8 is usually the shorter path to a finished
+# run on a busy shared cluster. The walltime assumes it might NOT scale at all,
+# covering 9.71 x 1.92 = 18.6 h either way. 8 x 6G = 48G, ~2.7x the 17.9G peak.
+split_pipe_align:
+    h_vmem: 6G
+    tmem:   6G
+    h_rt:   "48:00:00"
+    submission_string: "-pe smp 8 -R y"
+
+# post -> clean (PostProcess, Molinfo, DGE, SubSample, Analysis, Report, Clean).
+# I/O-bound at 1.2-1.9 cores, so it stays at 4 slots. Memory stays at 16G/slot
+# because DGE has NOT been profiled yet -- it builds the cell x gene matrices
+# and is the likeliest true peak. Trim it once one full run reports back.
+split_pipe_post:
     h_vmem: 16G
     tmem:   16G
     h_rt:   "72:00:00"
+    submission_string: "-pe smp 4 -R y"
+
+# Used only when splitpipe.split_steps is FALSE (one --mode all job per
+# sublibrary). Raised from 72h: ParseFANS1 was still mid-run at 19.8 h having
+# reached only step 5 of 10, projecting to ~28 h -- so the largest sublibrary
+# lands near 55 h, which is too close to a 72 h ceiling to be safe.
+split_pipe:
+    h_vmem: 16G
+    tmem:   16G
+    h_rt:   "120:00:00"
     submission_string: "-pe smp 4 -R y"
 
 # Merges all 16 sublibraries into one DGE matrix -- memory-bound, not CPU-bound.

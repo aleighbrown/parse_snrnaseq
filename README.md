@@ -179,11 +179,56 @@ rule. **`tmem` and `h_vmem` are per slot** on this cluster, so `-pe smp 4` with
 | rule | slots | tmem | total | h_rt |
 |---|---|---|---|---|
 | `mkref` | 4 | 16G | 64G | 24:00:00 |
-| `split_pipe` | 4 | 16G | 64G | 72:00:00 |
+| `split_pipe_pre` | 8 | 4G | 32G | 24:00:00 |
+| `split_pipe_align` | 8 | 6G | 48G | 48:00:00 |
+| `split_pipe_post` | 4 | 16G | 64G | 72:00:00 |
+| `split_pipe` *(fallback)* | 4 | 16G | 64G | 120:00:00 |
 | `split_pipe_comb` | 8 | 8G | 64G | 24:00:00 |
 | `cellsnp` | 8 | 4G | 32G | 24:00:00 |
 | `vireo` | 4 | 8G | 32G | 12:00:00 |
 | `import_assignments` | 1 | 16G | 16G | 2:00:00 |
+
+### Why split-pipe is three rules
+
+In split-pipe the **pipeline steps are modes** (`run_modes.py:RUN_MODE_DEFS`):
+`inqc pre align post mol dge sub ana rep clean`. `--mode all` just walks that
+list, and the help documents running a subset as *"start at `<mode1>` and use
+`--until_step <mode2>`"*. Profiling one sublibrary (`process/mem_profile.txt`,
+ParseFANS1, 1.69e9 reads, 4 threads) showed a single job is the wrong shape:
+
+| step | hours | mean cores | peak RSS |
+|---|---|---|---|
+| InQC | 0.03 | 0.86 | 11.2G |
+| Preprocess | 5.73 | 2.77 | 11.3G |
+| **Align (STAR)** | **9.71** | **3.87** | **17.9G** |
+| PostProcess | 3.28 | 1.87 | 4.3G |
+| Molinfo | 1.09+ | 1.20 | 3.7G |
+
+Alignment is the only CPU-bound step and it saturates its 4 cores; everything
+from `post` onward idles at 1.2--1.9 cores while still holding a 64 GB
+reservation. `align` gets 8 slots rather than 16 deliberately -- 16 would need
+hundreds of slots once several sublibraries run at once, and a job that queues
+finishes later than a narrower one that runs. So `split_pipe_pre` (inqc+pre), `split_pipe_align` (align alone)
+and `split_pipe_post` (post→clean) are submitted separately, each sized to what
+it actually uses. Set `splitpipe.split_steps: false` to go back to one
+`--mode all` job per sublibrary.
+
+Two things make this safe:
+
+- **Sentinel outputs.** `pre` and `align` declare `.spipe_*.done` files, not
+  real ones. split-pipe's `clean` step deletes the `process/*.bam`
+  intermediates at the end of the run; a rule declaring one of those as its
+  output would see it missing on the next invocation and re-run the whole chain.
+- **Every step gets the full flag block.** This run's `run_proc_def.json` has an
+  empty `parent` object, so `init_parent()` (`spc_init.py:1280`) cannot recover
+  chemistry/kit from a parent dir. `--chemistry`, `--kit`, `--genome_dir` and
+  `--samp_list` are passed on every call; only `--mode`, `--until_step` and
+  `--nthreads` differ.
+
+**Walltimes are sized for the largest sublibrary, not the one that was tested.**
+ParseFANS1 is the 3rd *smallest* of the 16 (102 GB of FASTQ vs a 122 GB mean and
+ParseFANS11's 196 GB), so its timings scale by up to 1.92x — before any I/O
+contention from running all 16 at once.
 
 The slot counts are mirrored by the per-rule `threads:` block in
 `config.yaml` — **keep the two in step**. A rule that asks snakemake for more
@@ -200,7 +245,13 @@ Note that `--cluster-config` is a Snakemake 7-and-earlier interface (removed in
 8), which is what this submission pattern relies on.
 
 Outputs land in `results/`:
-- `splitpipe/combined/all-well/DGE_filtered/` — combined DGE matrix.
+- `splitpipe/combined/all-sample/DGE_filtered/` — combined DGE matrix. **Not
+  `all-well`**: with samples given via `--samp_list` and `make_allwell` at its
+  default of False, split-pipe never creates an `all-well` sample
+  (`spc_setup.py:209` only adds one when no samples were given, or when
+  `--yes_allwell` is passed). This run sets up four: `K_negative`,
+  `TDP_negative`, `positive`, `all-sample`. `all-sample` covers all 96 wells,
+  so it is the equivalent file.
 - `demux/donor_assignments.all_sublibraries.tsv` — one row per cell
   (sublibrary, cell id, donor, doublet prob, joined donor metadata).
 - `demux/demux_summary.tsv` — cells per donor × sublibrary.

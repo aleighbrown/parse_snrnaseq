@@ -96,13 +96,28 @@ splitpipe:
   sample_list: config/parse_sample_list.txt
   # Paths RELATIVE to each sublibrary's split-pipe output dir.
   bam_name: process/barcode_headAligned_anno.bam
-  cell_meta: all-well/DGE_filtered/cell_metadata.csv
+  # NOT all-well. With samples given via --samp_list and make_allwell False
+  # (the default), split-pipe never creates an 'all-well' sample -- spc_setup.py
+  # only adds one when no samples were given or --yes_allwell is passed. This
+  # run set up 4 samples: K_negative, TDP_negative, positive, all-sample.
+  # 'all-sample' covers all 96 wells, so it is the equivalent file; pointing at
+  # all-well would leave this rule's declared output permanently missing, and
+  # snakemake would fail the job and delete its outputs after ~28 h of work.
+  cell_meta: all-sample/DGE_filtered/cell_metadata.csv
   # Column in cell_meta holding the barcode string that matches the BAM tag.
   # The collaborator's barcodes look like "01_01_67__sParseFANS1", i.e.
   # <bc_wells>__s<sublibrary>, so bc_wells is the per-sublibrary form.
   barcode_column: bc_wells
-  # Extra flags for `--mode all` (e.g. --parfile, --kit_score_skip).
+  # Extra flags passed to EVERY split-pipe step invocation
+  # (e.g. --parfile, --kit_score_skip).
   all_extra: ""
+  # true  -> submit each sublibrary as three right-sized jobs:
+  #            split_pipe_pre    inqc + pre     (thread-hungry)
+  #            split_pipe_align  align only     (STAR; the CPU-bound step)
+  #            split_pipe_post   post -> clean  (I/O-bound, runs narrow)
+  # false -> one `--mode all` job per sublibrary, as before.
+  # See workflow/rules/parse.smk for the measurements behind the split.
+  split_steps: true
 
 # --- Stage 2: demultiplexing -------------------------------------------------
 demux:
@@ -189,6 +204,13 @@ threads:
   # Rules not listed here declare no `threads:` and get 1 slot.
   default: 1
   mkref: 4
+  # The three-step split (splitpipe.split_steps: true). Measured mean core use
+  # at 4 threads was pre 2.77, align 3.87, post-onward 1.2-1.9 -- so only the
+  # first two are worth widening.
+  split_pipe_pre: 8
+  split_pipe_align: 8
+  split_pipe_post: 4
+  # Used only when splitpipe.split_steps is false.
   split_pipe: 4
   split_pipe_comb: 8
   prepare_reference_vcf: 4

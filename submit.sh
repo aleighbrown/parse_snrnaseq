@@ -38,6 +38,15 @@ cp config/cluster.yaml "${SM_FOLDER}/${SM_RUN_NAME}_cluster.yaml"
 
 echo "[submit] target=${SM_TARGET}  logs=${SM_FOLDER}"
 
+# -j 6 caps CONCURRENT cluster jobs, not total ones -- all 16 sublibraries go in
+# with one submission and snakemake feeds them through six at a time. split-pipe
+# writes ~900 GB per sublibrary (measured on ParseFANS1), so running all 16
+# abreast would put ~10 TB of concurrent writes on shared /SAN and inflate every
+# job's runtime through contention. Six keeps peak intermediates near 1-1.5 TB
+# and per-job runtimes near their measured baseline. Queue time does not count
+# against SGE h_rt -- it starts when the job starts -- so throttling costs
+# wall-clock but puts no job at risk of being killed.
+
 snakemake "${SM_TARGET}" \
 -s workflow/Snakefile \
 --conda-prefix "/SAN/vyplab/vyplab_reference_genomes/conda_envs/" \
@@ -45,7 +54,7 @@ snakemake "${SM_TARGET}" \
 --jobscript cluster_qsub.sh \
 --cluster-config config/cluster.yaml \
 --cluster-sync "qsub -l tmem={cluster.tmem},h_vmem={cluster.h_vmem},h_rt={cluster.h_rt} -o ${SM_FOLDER} {cluster.submission_string}" \
--j 40 \
+-j 6 \
 --nolock \
 --rerun-incomplete \
 --latency-wait 100 \
