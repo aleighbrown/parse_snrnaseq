@@ -72,7 +72,7 @@ def nthreads(rule_name):
 
 # --- targets -----------------------------------------------------------------
 # Target rules do no work; never submit them as cluster jobs.
-localrules: all, reference, donor_manifest, test_sublib
+localrules: all, splitpipe_all, reference, donor_manifest, test_sublib
 
 # Smoke test: run split-pipe on ONE sublibrary before committing all 16.
 # Everything that can go wrong here (chemistry, well->sort map, reference,
@@ -83,6 +83,16 @@ TEST_SUBLIB = config.get("test_sublibrary") or SUBLIBS[0]
 rule test_sublib:
     input:
         RESULTS + "/splitpipe/" + TEST_SUBLIB + "/" + config["splitpipe"]["cell_meta"],
+
+# Everything split-pipe, and nothing after it: all 16 sublibraries through
+# `--mode all` (or the three-step split) and then `--mode comb`. Use this when
+# the demux inputs are not in place yet -- `all` additionally needs the
+# collaborator's assignment table (demux.provided.table), and a missing table
+# makes the whole DAG unbuildable rather than just the demux branch.
+#   source submit.sh splitpipe_all
+rule splitpipe_all:
+    input:
+        RESULTS + "/splitpipe/combined/" + config["splitpipe"]["cell_meta"],
 
 rule all:
     input:

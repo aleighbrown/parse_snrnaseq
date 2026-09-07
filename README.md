@@ -143,6 +143,7 @@ snakemake reference -n -p       # dry run first
 
 screen -S parse
 source submit.sh                # full run (rule all)
+source submit.sh splitpipe_all  # all 16 sublibraries + comb, WITHOUT demux
 source submit.sh reference      # build the shared Parse reference only
 source submit.sh all rerun      # tag the submission "all_rerun"
 # ctrl-a d to detach; `screen -r parse` to come back
@@ -243,6 +244,14 @@ it still works, but the quoted form is what's meant.
 
 Note that `--cluster-config` is a Snakemake 7-and-earlier interface (removed in
 8), which is what this submission pattern relies on.
+
+`splitpipe_all` exists because `all` also depends on
+`demux.provided.table` (the collaborator's assignment table). Snakemake builds
+the whole DAG up front, so if that table is missing `all` fails with a
+`MissingInputException` before any split-pipe job is submitted -- even though
+nothing about split-pipe is blocked. `splitpipe_all` stops at the combined DGE
+matrix, so the multi-day sublibrary run can start while the demux inputs are
+still being sorted out.
 
 Outputs land in `results/`:
 - `splitpipe/combined/all-sample/DGE_filtered/` — combined DGE matrix. **Not
