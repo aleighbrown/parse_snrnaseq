@@ -50,10 +50,10 @@ mkref:
 
 # inqc + pre. 5.73 h at 4 threads on the smallest sublibrary. 8 x 4G = 32G.
 split_pipe_pre:
-    h_vmem: 4G
-    tmem:   4G
+    h_vmem: 8G
+    tmem:   8G
     h_rt:   "24:00:00"
-    submission_string: "-pe smp 8 -R y"
+    submission_string: "-pe smp 4 -R y"
 
 # align. STAR, and the only step that saturates its cores (3.87 of 4). 9.71 h
 # at 4 threads, so expect ~5 h at 8. 8 slots rather than 16 on purpose: with 16,
