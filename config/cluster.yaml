@@ -90,10 +90,10 @@ split_pipe:
 # Merges all 16 sublibraries into one DGE matrix -- memory-bound, not CPU-bound.
 # 8 x 8G = 64G.
 split_pipe_comb:
-    h_vmem: 8G
-    tmem:   8G
-    h_rt:   "24:00:00"
-    submission_string: "-pe smp 8 -R y"
+    h_vmem: 64G
+    tmem:   64G
+    h_rt:   "15:00:00"
+    submission_string: " "
 
 barcodes_from_meta:
     h_vmem: 4G
