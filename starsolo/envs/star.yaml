@@ -1,0 +1,8 @@
+name: star
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  # Pinned exactly: the reference directory name carries this version.
+  - star=2.7.11b
+  - samtools=1.21

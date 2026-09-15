@@ -358,5 +358,7 @@ Known gaps:
 Downstream steps the collaborator ran by hand, worth adding next:
 - **regtools junction extraction** per sublibrary on UMI-deduplicated BAMs, to
   pull cryptic splicing events (69 junctions in 54 genes were recoverable).
+  split-pipe's BAMs were not kept; `starsolo/` is a separate workflow that
+  regenerates them from split-pipe's called cells (see `starsolo/README.md`).
 - **Pegasus** QC / harmony clustering with `--demux`, using barcode-level
   metadata of donor × sort.

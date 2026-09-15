@@ -1,0 +1,7 @@
+name: sinto
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - sinto>=0.10
+  - samtools=1.21

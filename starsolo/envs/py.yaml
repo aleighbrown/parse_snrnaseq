@@ -1,0 +1,13 @@
+name: starsolo_py
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.12
+  - pandas>=2.0
+  - numpy
+  - dnaio>=1.2
+  # fast gzip for dnaio/xopen; pigz as the fallback
+  - python-isal
+  - isa-l
+  - pigz

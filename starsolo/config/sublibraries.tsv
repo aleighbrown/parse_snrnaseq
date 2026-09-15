@@ -1,0 +1,12 @@
+# sublibrary  fq1 (cDNA)  fq2 (barcodes)  cells_tag
+#
+# fq1/fq2 are relative to config.yaml's fastq_dir (absolute paths used as-is).
+# cells_tag is the suffix split-pipe's COMBINED cell_metadata.csv appends to this
+# sublibrary's barcodes ("01_01_67__s1" -> "1"); its name ("ParseFANS1") is
+# accepted too. The extraction validation will show a weak correlation if the
+# tag points at the wrong sublibrary.
+#
+# Pilot: ParseFANS1 only. Add rows to scale out -- note that pooled pass-1
+# junctions then change, which reruns pass 2 for every sublibrary (on purpose).
+sublibrary	fq1	fq2	cells_tag
+ParseFANS1	ParseFANS1_R1_001.fastq.gz	ParseFANS1_R2_001.fastq.gz	1

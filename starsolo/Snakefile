@@ -1,0 +1,587 @@
+# =============================================================================
+# STARsolo re-alignment of split-pipe's called cells, for splicing analysis.
+#
+# The split-pipe run deleted its BAMs. Rather than rerun split-pipe, this
+# workflow keeps only the reads from cells split-pipe already called and aligns
+# those with STARsolo:
+#
+#   split-pipe cell_metadata.csv ─► whitelist: one 24-nt barcode per called cell
+#   fq2 (sample) ─► read_layout.json: where the UMI and bc1/bc2/bc3 sit
+#   fq1 + fq2 ─► extract: called-cell pairs only, R2 rewritten as cb + UMI
+#        └─► validation against split-pipe's per-cell mread_count
+#   GENCODE v42 FASTA + GTF ─► STAR index (shared lab resource, built once)
+#   first 2M reads ─► strand test: --soloStrand Forward vs Reverse
+#   R1 ─► STAR pass 1 ─► novel junctions pooled over ALL sublibraries
+#   R1 + R2 ─► STARsolo pass 2 ─► sorted BAM (CB/UB) + Gene/GeneFull/SJ matrices
+#        └─► target `split`: one BAM per donor x sort (sinto)
+#
+# Run from THIS directory (starsolo/):
+#   snakemake -n                      dry run
+#   source submit.sh                  pilot (rule all)
+#   source submit.sh layout           barcode layout only (minutes)
+#   source submit.sh reference        STAR index only
+# =============================================================================
+import os
+import re
+
+import pandas as pd
+from snakemake.exceptions import WorkflowError
+
+configfile: "config/config.yaml"
+
+RESULTS = config["results_dir"].rstrip("/")
+TMP_ROOT = (config.get("tmp_dir") or RESULTS + "/tmp").rstrip("/")
+SCRIPTS = os.path.join(workflow.basedir, "scripts")
+REF = config["reference"]
+REF_DIR = REF["dir"].rstrip("/")
+STAR = config["star"]
+BC = config["parse_barcodes"]
+LAYOUT = BC.get("layout") or {}
+
+subs = (
+    pd.read_csv(config["sublibraries"], sep="\t", comment="#", dtype=str)
+    .fillna("")
+    .set_index("sublibrary", drop=False)
+)
+SUBLIBS = subs.index.tolist()
+
+wildcard_constraints:
+    sublib="|".join(re.escape(s) for s in SUBLIBS),
+
+WL = RESULTS + "/whitelist/{sublib}"
+EX = RESULTS + "/extract/{sublib}"
+SOLO = RESULTS + "/solo/{sublib}"
+
+
+# --- helpers -----------------------------------------------------------------
+def fastq(col):
+    def f(wc):
+        p = subs.loc[wc.sublib, col]
+        return ancient(p if os.path.isabs(p) else os.path.join(config["fastq_dir"], p))
+    return f
+
+
+def as_bool(v):
+    """YAML false, or 'false'/'no'/'0' as given via --config."""
+    return str(v).strip().lower() not in ("false", "no", "0", "none", "null", "")
+
+
+def barcode_table(key):
+    """Input function, so an unset table only fails the rules that need it
+    (the reference can be built before the tables are found)."""
+    def f(wc):
+        path = BC.get(key)
+        if not path or str(path).strip().lower() in ("null", "none"):
+            raise WorkflowError(
+                f"parse_barcodes.{key} is not set in config/config.yaml.\n"
+                "Point bc1/bc2/bc3 at split-pipe's barcode CSVs -- see README.md, "
+                "'Finding the barcode tables'."
+            )
+        return ancient(path)
+    return f
+
+
+def nthreads(rule_name):
+    """Must equal the rule's '-pe smp N' in config/cluster.yaml."""
+    t = config["threads"]
+    return t.get(rule_name, t["default"])
+
+
+def opt(v):
+    """Layout override for the CLI: -1 means auto-detect."""
+    return -1 if v is None else int(v)
+
+
+BC_INPUTS = dict(bc1=barcode_table("bc1"), bc2=barcode_table("bc2"), bc3=barcode_table("bc3"))
+
+# A reference that already exists is used as-is and has NO rule -- so no run
+# of this workflow can ever decide to rebuild (and first delete) a shared index.
+REF_BUILT = os.path.exists(os.path.join(REF_DIR, "SA")) and os.path.exists(
+    os.path.join(REF_DIR, "genomeParameters.txt")
+)
+
+
+# --- targets -----------------------------------------------------------------
+localrules: all, reference, layout, extract, strand, split
+
+rule all:
+    input:
+        expand(EX + "/validation/summary.txt", sublib=SUBLIBS),
+        expand(SOLO + "/Aligned.sortedByCoord.out.bam.bai", sublib=SUBLIBS),
+
+rule reference:
+    input:
+        REF_DIR,
+
+rule layout:
+    input:
+        expand(EX + "/read_layout.json", sublib=SUBLIBS),
+
+rule extract:
+    input:
+        expand(EX + "/validation/summary.txt", sublib=SUBLIBS),
+
+rule strand:
+    input:
+        expand(RESULTS + "/strand/{sublib}/strand.txt", sublib=SUBLIBS),
+
+rule split:
+    input:
+        expand(RESULTS + "/split/{sublib}/.split.done", sublib=SUBLIBS),
+
+
+# --- whitelist ---------------------------------------------------------------
+rule make_whitelist:
+    input:
+        cells=ancient(config["cells"]["file"]),
+        **BC_INPUTS,
+    output:
+        cells=WL + "/cells.tsv",
+        whitelist=WL + "/whitelist.txt",
+    params:
+        scripts=SCRIPTS,
+        col=config["cells"]["barcode_column"],
+        tag=lambda wc: subs.loc[wc.sublib, "cells_tag"],
+    log:
+        "logs/whitelist/{sublib}.log",
+    conda:
+        "envs/py.yaml"
+    shell:
+        r"""
+        python {params.scripts}/make_whitelist.py \
+            --cells-file {input.cells} \
+            --barcode-column {params.col} \
+            --sublibrary {wildcards.sublib} \
+            --tag '{params.tag}' \
+            --bc1 {input.bc1} --bc2 {input.bc2} --bc3 {input.bc3} \
+            --out-cells {output.cells} \
+            --out-whitelist {output.whitelist} > {log} 2>&1
+        """
+
+
+# --- barcode read layout -----------------------------------------------------
+# Scans a sample of fq2 for each round's barcodes at every offset. A few minutes;
+# run `source submit.sh layout` and read the JSON before committing to extraction.
+rule read_layout:
+    input:
+        fq1=fastq("fq1"),
+        fq2=fastq("fq2"),
+        cells=WL + "/cells.tsv",
+        **BC_INPUTS,
+    output:
+        EX + "/read_layout.json",
+    params:
+        scripts=SCRIPTS,
+        n=BC.get("layout_sample_reads", 200000),
+        mm=BC.get("max_mismatch", 1),
+        umi_start=LAYOUT.get("umi_start", 0),
+        umi_len=LAYOUT.get("umi_len", 10),
+        bc1=opt(LAYOUT.get("bc1_start")),
+        bc2=opt(LAYOUT.get("bc2_start")),
+        bc3=opt(LAYOUT.get("bc3_start")),
+        overhang=REF["sjdb_overhang"],
+    log:
+        "logs/extract/{sublib}.layout.log",
+    conda:
+        "envs/py.yaml"
+    shell:
+        r"""
+        python {params.scripts}/detect_layout.py \
+            --fq1 {input.fq1} --fq2 {input.fq2} \
+            --cells {input.cells} \
+            --bc1 {input.bc1} --bc2 {input.bc2} --bc3 {input.bc3} \
+            --max-mismatch {params.mm} \
+            --sample-reads {params.n} \
+            --umi-start {params.umi_start} --umi-len {params.umi_len} \
+            --bc1-start {params.bc1} --bc2-start {params.bc2} --bc3-start {params.bc3} \
+            --sjdb-overhang {params.overhang} \
+            --out {output} > {log} 2>&1
+        """
+
+
+# --- extraction --------------------------------------------------------------
+# One pass over both FASTQs. Pure Python on the hot loop, so its throughput is
+# the pilot's main unknown -- extract_stats.json reports pairs/second.
+rule extract_reads:
+    input:
+        fq1=fastq("fq1"),
+        fq2=fastq("fq2"),
+        cells=WL + "/cells.tsv",
+        layout=EX + "/read_layout.json",
+        **BC_INPUTS,
+    output:
+        r1=EX + "/R1.cdna.fastq.gz",
+        r2=EX + "/R2.cb_umi.fastq.gz",
+        counts=EX + "/cell_read_counts.tsv",
+        stats=EX + "/extract_stats.json",
+    params:
+        scripts=SCRIPTS,
+    threads: nthreads("extract_reads")
+    log:
+        "logs/extract/{sublib}.extract.log",
+    conda:
+        "envs/py.yaml"
+    shell:
+        r"""
+        python {params.scripts}/extract_reads.py \
+            --fq1 {input.fq1} --fq2 {input.fq2} \
+            --cells {input.cells} --layout {input.layout} \
+            --bc1 {input.bc1} --bc2 {input.bc2} --bc3 {input.bc3} \
+            --out1 {output.r1} --out2 {output.r2} \
+            --counts {output.counts} --stats {output.stats} \
+            --threads {threads} > {log} 2>&1
+        """
+
+
+rule validate_extraction:
+    input:
+        counts=EX + "/cell_read_counts.tsv",
+        cells=WL + "/cells.tsv",
+        stats=EX + "/extract_stats.json",
+    output:
+        summary=EX + "/validation/summary.txt",
+        cells=EX + "/validation/per_cell.tsv",
+        wells=EX + "/validation/per_round1_well.tsv",
+    params:
+        scripts=SCRIPTS,
+        ref_col=config["cells"]["read_count_column"],
+        sort_col=config["cells"]["sort_column"],
+    log:
+        "logs/extract/{sublib}.validate.log",
+    conda:
+        "envs/py.yaml"
+    shell:
+        r"""
+        python {params.scripts}/compare_splitpipe.py \
+            --counts {input.counts} --cells {input.cells} --stats {input.stats} \
+            --read-count-column {params.ref_col} --sort-column {params.sort_col} \
+            --out-cells {output.cells} --out-wells {output.wells} \
+            --out-summary {output.summary} > {log} 2>&1
+        """
+
+
+# --- STAR index --------------------------------------------------------------
+if not REF_BUILT:
+
+    rule star_index:
+        input:
+            fasta=ancient(REF["fasta"]),
+            gtf=ancient(REF["gtf"]),
+        output:
+            directory(REF_DIR),
+        params:
+            tmp=TMP_ROOT + "/star_index",
+            overhang=REF["sjdb_overhang"],
+            ram=int(REF.get("genome_generate_ram_gb", 60) * 1e9),
+            extra=REF.get("extra", ""),
+        threads: nthreads("star_index")
+        log:
+            "logs/reference/star_index.log",
+        conda:
+            "envs/star.yaml"
+        shell:
+            r"""
+            set -euo pipefail
+            rm -rf {params.tmp}
+            mkdir -p {params.tmp} {output}
+            # STAR needs the GTF as plain text.
+            case "{input.gtf}" in
+                *.gz) gzip -cd {input.gtf} > {params.tmp}/genes.gtf ;;
+                *)    ln -s "$(readlink -f {input.gtf})" {params.tmp}/genes.gtf ;;
+            esac
+
+            STAR --runMode genomeGenerate \
+                --runThreadN {threads} \
+                --genomeDir {output} \
+                --genomeFastaFiles {input.fasta} \
+                --sjdbGTFfile {params.tmp}/genes.gtf \
+                --sjdbOverhang {params.overhang} \
+                --limitGenomeGenerateRAM {params.ram} \
+                --outTmpDir {params.tmp}/_STARtmp \
+                --outFileNamePrefix {params.tmp}/ \
+                {params.extra} > {log} 2>&1
+
+            cp {params.tmp}/Log.out {output}/genomeGenerate.Log.out
+            # Provenance stamp: this index is shared, so record what built it.
+            {{
+                echo "built:          $(date -Iseconds)"
+                echo "by:             ${{USER:-unknown}}@$(hostname)"
+                echo "STAR:           $(STAR --version)"
+                echo "fasta:          {input.fasta}"
+                echo "gtf:            {input.gtf}"
+                echo "sjdbOverhang:   {params.overhang}"
+                echo "extra:          {params.extra}"
+                echo "workflow:       parse_snrnaseq/starsolo"
+            }} > {output}/build_provenance.txt
+            rm -rf {params.tmp}
+            """
+
+
+# --- STARsolo barcode flags --------------------------------------------------
+# R2 is exactly cb + UMI and cb is already corrected, so: simple layout, exact
+# whitelist match, no cell calling (every whitelisted barcode is a cell).
+SOLO_BC = (
+    "--soloType CB_UMI_Simple "
+    "--soloCBstart 1 --soloCBlen $CBLEN "
+    "--soloUMIstart $((CBLEN + 1)) --soloUMIlen {params.umi_len} "
+    "--soloCBwhitelist {input.whitelist} --soloCBmatchWLtype Exact "
+    "--soloCellFilter None"
+)
+CBLEN_SH = "CBLEN=$(head -n1 {input.whitelist} | awk '{{print length($0)}}')"
+
+
+# --- strand ------------------------------------------------------------------
+# Two quick STARsolo runs on the first N reads, Forward vs Reverse. Fails
+# rather than guessing if neither strand clearly wins.
+rule strand_test:
+    input:
+        r1=EX + "/R1.cdna.fastq.gz",
+        r2=EX + "/R2.cb_umi.fastq.gz",
+        whitelist=WL + "/whitelist.txt",
+        genome=ancient(REF_DIR),
+    output:
+        strand=RESULTS + "/strand/{sublib}/strand.txt",
+        report=RESULTS + "/strand/{sublib}/strand_test.tsv",
+    params:
+        scripts=SCRIPTS,
+        outdir=RESULTS + "/strand/{sublib}",
+        n=STAR.get("strand_test_reads", 2000000),
+        umi_len=LAYOUT.get("umi_len", 10),
+    threads: nthreads("strand_test")
+    log:
+        "logs/star/{sublib}.strand.log",
+    conda:
+        "envs/star.yaml"
+    shell:
+        r"""
+        set -euo pipefail
+        """ + CBLEN_SH + r"""
+        : > {log}
+        for s in Forward Reverse; do
+            mkdir -p {params.outdir}/$s
+            STAR --runThreadN {threads} \
+                --genomeDir {input.genome} \
+                --readFilesIn {input.r1} {input.r2} \
+                --readFilesCommand zcat \
+                --readMapNumber {params.n} \
+                """ + SOLO_BC + r""" \
+                --soloStrand $s \
+                --soloFeatures Gene GeneFull \
+                --outSAMtype None \
+                --outFileNamePrefix {params.outdir}/$s/ >> {log} 2>&1
+        done
+        python {params.scripts}/choose_strand.py \
+            --forward {params.outdir}/Forward --reverse {params.outdir}/Reverse \
+            --out {output.strand} --report {output.report} >> {log} 2>&1
+        """
+
+
+# --- pass 1: junction discovery ----------------------------------------------
+rule star_pass1:
+    input:
+        r1=EX + "/R1.cdna.fastq.gz",
+        genome=ancient(REF_DIR),
+    output:
+        sj=RESULTS + "/pass1/{sublib}/SJ.out.tab",
+        log_final=RESULTS + "/pass1/{sublib}/Log.final.out",
+    params:
+        prefix=RESULTS + "/pass1/{sublib}/",
+        tmp=TMP_ROOT + "/{sublib}.pass1",
+        n=STAR.get("pass1_read_number", -1),
+        extra=STAR.get("align_extra", ""),
+    threads: nthreads("star_pass1")
+    log:
+        "logs/star/{sublib}.pass1.log",
+    conda:
+        "envs/star.yaml"
+    shell:
+        r"""
+        set -euo pipefail
+        rm -rf {params.tmp}
+        mkdir -p $(dirname {params.tmp})
+        STAR --runThreadN {threads} \
+            --genomeDir {input.genome} \
+            --readFilesIn {input.r1} \
+            --readFilesCommand zcat \
+            --readMapNumber {params.n} \
+            --outSAMtype None \
+            {params.extra} \
+            --outTmpDir {params.tmp} \
+            --outFileNamePrefix {params.prefix} > {log} 2>&1
+        """
+
+
+# Pools over every sublibrary in config/sublibraries.tsv -- adding sublibraries
+# changes this file and (deliberately) reruns every pass 2.
+rule pool_junctions:
+    input:
+        expand(RESULTS + "/pass1/{sublib}/SJ.out.tab", sublib=SUBLIBS),
+    output:
+        sjdb=RESULTS + "/pass1/pooled_junctions.sjdb.tsv",
+        report=RESULTS + "/pass1/pooled_junctions.report.txt",
+    params:
+        scripts=SCRIPTS,
+        min_unique=STAR.get("pass1_min_unique_reads", 3),
+    log:
+        "logs/star/pool_junctions.log",
+    conda:
+        "envs/py.yaml"
+    shell:
+        r"""
+        python {params.scripts}/pool_junctions.py {input} \
+            --min-unique {params.min_unique} \
+            --out {output.sjdb} --report {output.report} > {log} 2>&1
+        """
+
+
+# --- pass 2: STARsolo --------------------------------------------------------
+_STRAND = str(STAR.get("strand", "auto"))
+if _STRAND not in ("auto", "Forward", "Reverse"):
+    raise WorkflowError("star.strand must be auto, Forward or Reverse; got " + repr(_STRAND))
+TWO_PASS = as_bool(STAR.get("two_pass", True))
+
+
+def _sjdb_flags(wc, input):
+    if not input.sjdb:
+        return ""
+    return (f"--sjdbFileChrStartEnd {input.sjdb} "
+            f"--limitSjdbInsertNsj {STAR.get('limit_sjdb_insert', 2000000)}")
+
+
+rule star_solo:
+    input:
+        r1=EX + "/R1.cdna.fastq.gz",
+        r2=EX + "/R2.cb_umi.fastq.gz",
+        whitelist=WL + "/whitelist.txt",
+        genome=ancient(REF_DIR),
+        strand=RESULTS + "/strand/{sublib}/strand.txt" if _STRAND == "auto" else [],
+        sjdb=RESULTS + "/pass1/pooled_junctions.sjdb.tsv" if TWO_PASS else [],
+    output:
+        bam=SOLO + "/Aligned.sortedByCoord.out.bam",
+        sj=SOLO + "/SJ.out.tab",
+        log_final=SOLO + "/Log.final.out",
+        solo=directory(SOLO + "/Solo.out"),
+    params:
+        prefix=SOLO + "/",
+        tmp=TMP_ROOT + "/{sublib}.solo",
+        fixed_strand="" if _STRAND == "auto" else _STRAND,
+        sjdb=_sjdb_flags,
+        umi_len=LAYOUT.get("umi_len", 10),
+        features=STAR.get("solo_features", "Gene GeneFull SJ"),
+        dedup=STAR.get("umi_dedup", "1MM_CR"),
+        multimappers=STAR.get("multimappers", "Unique"),
+        attrs=STAR.get("sam_attributes", "NH HI AS nM NM MD jM jI CB UB GX GN sM"),
+        sort_ram=int(STAR.get("bam_sort_ram_gb", 20) * 1e9),
+        extra=STAR.get("align_extra", ""),
+    threads: nthreads("star_solo")
+    log:
+        "logs/star/{sublib}.solo.log",
+    conda:
+        "envs/star.yaml"
+    shell:
+        r"""
+        set -euo pipefail
+        if [ -n "{params.fixed_strand}" ]; then
+            STRAND={params.fixed_strand}
+        else
+            STRAND=$(cat {input.strand})
+        fi
+        """ + CBLEN_SH + r"""
+        echo "[star_solo] strand=$STRAND cb_len=$CBLEN" > {log}
+        rm -rf {params.tmp}
+        mkdir -p $(dirname {params.tmp})
+
+        STAR --runThreadN {threads} \
+            --genomeDir {input.genome} \
+            --readFilesIn {input.r1} {input.r2} \
+            --readFilesCommand zcat \
+            {params.sjdb} \
+            """ + SOLO_BC + r""" \
+            --soloStrand $STRAND \
+            --soloFeatures {params.features} \
+            --soloUMIdedup {params.dedup} \
+            --soloMultiMappers {params.multimappers} \
+            --outSAMtype BAM SortedByCoordinate \
+            --outSAMattributes {params.attrs} \
+            --limitBAMsortRAM {params.sort_ram} \
+            {params.extra} \
+            --outTmpDir {params.tmp} \
+            --outFileNamePrefix {params.prefix} >> {log} 2>&1
+        """
+
+
+rule index_bam:
+    input:
+        SOLO + "/Aligned.sortedByCoord.out.bam",
+    output:
+        SOLO + "/Aligned.sortedByCoord.out.bam.bai",
+    threads: nthreads("index_bam")
+    conda:
+        "envs/star.yaml"
+    shell:
+        "samtools index -@ {threads} {input}"
+
+
+# --- donor x sort BAMs (target: split) ---------------------------------------
+rule split_groups:
+    input:
+        cells=WL + "/cells.tsv",
+        donors=ancient(config["split"]["donor_table"]),
+    output:
+        groups=RESULTS + "/split/{sublib}/cell_groups.tsv",
+        summary=RESULTS + "/split/{sublib}/cells_per_group.tsv",
+    params:
+        scripts=SCRIPTS,
+        donor_col=config["split"]["donor_column"],
+        bc_col=config["split"]["barcode_column"],
+        sublib_col=config["split"]["sublibrary_column"],
+        cond_col=config["split"]["condition_column"],
+        sort_col=config["cells"]["sort_column"],
+    log:
+        "logs/split/{sublib}.groups.log",
+    conda:
+        "envs/py.yaml"
+    shell:
+        r"""
+        python {params.scripts}/split_groups.py \
+            --cells {input.cells} --donor-table {input.donors} \
+            --sublibrary {wildcards.sublib} \
+            --donor-column {params.donor_col} --barcode-column {params.bc_col} \
+            --sublibrary-column {params.sublib_col} \
+            --condition-column {params.cond_col} --sort-column {params.sort_col} \
+            --out {output.groups} --summary {output.summary} > {log} 2>&1
+        """
+
+
+rule split_bam:
+    input:
+        bam=SOLO + "/Aligned.sortedByCoord.out.bam",
+        bai=SOLO + "/Aligned.sortedByCoord.out.bam.bai",
+        groups=RESULTS + "/split/{sublib}/cell_groups.tsv",
+    output:
+        bams=directory(RESULTS + "/split/{sublib}/bams"),
+        done=touch(RESULTS + "/split/{sublib}/.split.done"),
+    threads: nthreads("split_bam")
+    log:
+        "logs/split/{sublib}.sinto.log",
+    conda:
+        "envs/sinto.yaml"
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p {output.bams}
+        sinto filterbarcodes \
+            -b {input.bam} \
+            -c {input.groups} \
+            --barcodetag CB \
+            --outdir {output.bams} \
+            -p {threads} > {log} 2>&1
+        # sinto works chromosome by chromosome; sort only if a BAM won't index.
+        for b in {output.bams}/*.bam; do
+            if ! samtools index -@ {threads} "$b" 2>> {log}; then
+                samtools sort -@ {threads} -o "$b.sorted" "$b"
+                mv "$b.sorted" "$b"
+                samtools index -@ {threads} "$b"
+            fi
+        done
+        """

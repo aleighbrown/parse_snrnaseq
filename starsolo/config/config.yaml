@@ -1,0 +1,116 @@
+# =============================================================================
+# STARsolo re-alignment of split-pipe's called cells (pilot: ParseFANS1)
+#
+# Run from starsolo/. Relative paths below are relative to that directory.
+# =============================================================================
+
+# --- Where output goes --------------------------------------------------------
+results_dir: /SAN/neuroscience/direct_nanopore_rna/ariana_parse/starsolo
+# STAR's --outTmpDir parent (BAM sorting spills here: expect 100+ GB per
+# sublibrary). null -> <results_dir>/tmp. The 50G tscratch is too small.
+tmp_dir: null
+
+# --- Input FASTQs ---------------------------------------------------------------
+fastq_dir: /SAN/neuroscience/direct_nanopore_rna/ariana_parse/00_fastq
+sublibraries: config/sublibraries.tsv
+
+# --- Called cells (the whitelist) ---------------------------------------------
+# split-pipe's COMBINED cell list: every cell split-pipe called (426,041), all
+# 16 sublibraries, barcodes "<bc_wells>__s<n>". Deliberately the broad list,
+# not the QC- or donor-filtered one: alignment is then independent of QC and
+# demux decisions, which are applied when BAMs are split (target `split`), and
+# mread_count is what the extraction is validated against.
+cells:
+  file: /SAN/neuroscience/direct_nanopore_rna/ariana_parse/spipe_jh_donor_annotations/splitpipe/combined/all-sample/DGE_filtered/cell_metadata.csv
+  barcode_column: bc_wells
+  read_count_column: mread_count
+  sort_column: sample          # K_negative / TDP_negative / positive
+
+# --- Parse barcode tables -------------------------------------------------------
+# REQUIRED before anything but the reference will run. split-pipe ships these
+# as CSVs inside the spipe env; see README.md "Finding the barcode tables".
+# bc1 must be the round-1 table with both oligo-dT (T) and random-hexamer (R)
+# rows. bc2 and bc3 are often the same file.
+#
+# These three are what split-pipe recorded for this run (ParseFANS1
+# process/run_proc_def.json -> barcode.bc_round_set):
+#   bc1  n302_R1_v3_8  "195 barcodes, 96 wells (Original count 302)"
+#   bc2  v1            " 96 barcodes, 96 wells"
+#   bc3  R3_v3         " 96 barcodes, 96 wells"
+parse_barcodes:
+  bc1: /SAN/vyplab/FUS_RNA/conda_envs/spipe/lib/python3.12/site-packages/splitpipe/barcodes/bc_data_n302_R1_v3_8.csv
+  bc2: /SAN/vyplab/FUS_RNA/conda_envs/spipe/lib/python3.12/site-packages/splitpipe/barcodes/bc_data_v1.csv
+  bc3: /SAN/vyplab/FUS_RNA/conda_envs/spipe/lib/python3.12/site-packages/splitpipe/barcodes/bc_data_R3_v3.csv
+  max_mismatch: 1              # per barcode, as split-pipe; 0 or 1
+  layout_sample_reads: 200000
+  # Barcode read (fq2) layout, 0-based. null = auto-detect from the reads.
+  # The UMI cannot be detected; Parse puts 10 nt at the start of fq2.
+  layout:
+    umi_start: 0
+    umi_len: 10
+    bc1_start: null
+    bc2_start: null
+    bc3_start: null
+
+# --- STAR reference -------------------------------------------------------------
+# Shared lab resource, built once. Named <species>_v<gencode>_STAR<version>
+# because an index is tied to the STAR build that made it (envs/star.yaml pins
+# 2.7.11b). If this directory already contains a finished index (SA +
+# genomeParameters.txt) it is used as-is and no build rule exists at all.
+# Same FASTA + GTF as the split-pipe reference, but with plain chr1.. contig
+# names (no "GRCh38-gencode-v42_" prefix).
+reference:
+  dir: /SAN/vyplab/vyplab_reference_genomes/STAR/human_v42_STAR2.7.11b
+  fasta: /SAN/vyplab/vyplab_reference_genomes/sequence/human/gencode/GRCh38.primary_assembly.genome.fa
+  gtf: /SAN/vyplab/vyplab_reference_genomes/annotation/human/GRCh38/gencode.v42.annotation.sorted.gtf.gz
+  # read length - 1. The layout step reports fq1's real length; reads shorter
+  # than this are fine.
+  sjdb_overhang: 149
+  genome_generate_ram_gb: 60
+  extra: ""
+
+# --- STAR / STARsolo ----------------------------------------------------------
+star:
+  # auto -> decided per sublibrary by the strand test; or Forward / Reverse
+  strand: auto
+  strand_test_reads: 2000000
+  # Pass 1 finds novel junctions; pass 2 inserts the set pooled across all
+  # sublibraries, so every sample is aligned against the same junctions.
+  two_pass: true
+  pass1_read_number: -1        # -1 = all reads
+  pass1_min_unique_reads: 3    # summed over sublibraries
+  limit_sjdb_insert: 2000000
+  # Applied to both passes. ENCODE-style junction filtering; intronMotif adds
+  # XS for strand-aware junction tools.
+  align_extra: >-
+    --outFilterType BySJout
+    --outSAMstrandField intronMotif
+    --alignSJoverhangMin 8
+    --alignSJDBoverhangMin 1
+    --alignIntronMin 20
+    --alignIntronMax 1000000
+  solo_features: "Gene GeneFull SJ"
+  umi_dedup: 1MM_CR
+  multimappers: Unique
+  sam_attributes: "NH HI AS nM NM MD jM jI CB UB GX GN sM"
+  bam_sort_ram_gb: 20
+
+# --- Donor x sort BAMs (target: split) -----------------------------------------
+# The main pipeline's per-cell donor table (demux.mode: provided).
+split:
+  donor_table: /SAN/neuroscience/direct_nanopore_rna/ariana_parse/spipe_jh_donor_annotations/demux/donor_assignments.all_sublibraries.tsv
+  donor_column: donor_id
+  barcode_column: barcode      # bc_wells, no sublibrary suffix
+  sublibrary_column: sublibrary
+  condition_column: condition  # cross-checked against split-pipe's sort
+
+# --- Threads: MUST match "-pe smp N" in config/cluster.yaml -------------------
+threads:
+  default: 1
+  extract_reads: 4
+  star_index: 8
+  strand_test: 8
+  star_pass1: 8
+  star_solo: 8
+  index_bam: 4
+  split_bam: 8

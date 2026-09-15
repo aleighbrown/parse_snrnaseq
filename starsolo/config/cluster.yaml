@@ -1,0 +1,92 @@
+# Per-rule SGE resources for the UCL CS cluster (see ../config/cluster.yaml for
+# the conventions). tmem / h_vmem are PER SLOT; keep "-pe smp N" equal to the
+# rule's threads in config.yaml. h_rt quoted on purpose (YAML sexagesimal).
+#
+# Sizes for the ParseFANS1 pilot are estimates, not measurements -- the pilot
+# exists to measure them. Walltimes allow ~2x for the largest sublibrary.
+
+__default__:
+    h_vmem: 4G
+    tmem:   4G
+    h_rt:   "2:00:00"
+    submission_string: " "
+
+# pandas over the 426k-row combined cell_metadata.csv
+make_whitelist:
+    h_vmem: 8G
+    tmem:   8G
+    h_rt:   "1:00:00"
+    submission_string: " "
+
+read_layout:
+    h_vmem: 8G
+    tmem:   8G
+    h_rt:   "2:00:00"
+    submission_string: " "
+
+# One Python pass over ~100 GB of gzipped FASTQ; the threads are (i)gzip
+# processes. Throughput unmeasured -- extract_stats.json will say.
+extract_reads:
+    h_vmem: 2G
+    tmem:   2G
+    h_rt:   "36:00:00"
+    submission_string: "-pe smp 4 -R y"
+
+validate_extraction:
+    h_vmem: 8G
+    tmem:   8G
+    h_rt:   "1:00:00"
+    submission_string: " "
+
+# GRCh38 + GENCODE genomeGenerate: ~32 GB, 1-2 h. 8 x 8G = 64G.
+star_index:
+    h_vmem: 8G
+    tmem:   8G
+    h_rt:   "12:00:00"
+    submission_string: "-pe smp 8 -R y"
+
+# Two STARsolo runs on 2M reads; mostly genome loading. 8 x 6G = 48G.
+strand_test:
+    h_vmem: 6G
+    tmem:   6G
+    h_rt:   "4:00:00"
+    submission_string: "-pe smp 8 -R y"
+
+# Alignment without BAM output. 8 x 6G = 48G.
+star_pass1:
+    h_vmem: 6G
+    tmem:   6G
+    h_rt:   "36:00:00"
+    submission_string: "-pe smp 8 -R y"
+
+pool_junctions:
+    h_vmem: 8G
+    tmem:   8G
+    h_rt:   "1:00:00"
+    submission_string: " "
+
+# Genome (~30G) + on-the-fly junction insertion + 20G BAM sort buffer.
+# 8 x 10G = 80G.
+star_solo:
+    h_vmem: 10G
+    tmem:   10G
+    h_rt:   "48:00:00"
+    submission_string: "-pe smp 8 -R y"
+
+index_bam:
+    h_vmem: 2G
+    tmem:   2G
+    h_rt:   "4:00:00"
+    submission_string: "-pe smp 4 -R y"
+
+split_groups:
+    h_vmem: 8G
+    tmem:   8G
+    h_rt:   "1:00:00"
+    submission_string: " "
+
+split_bam:
+    h_vmem: 4G
+    tmem:   4G
+    h_rt:   "24:00:00"
+    submission_string: "-pe smp 8 -R y"
