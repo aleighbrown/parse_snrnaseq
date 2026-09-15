@@ -6,7 +6,6 @@ name: starsolo_py
 channels:
   - conda-forge
   - bioconda
-  - nodefaults
 dependencies:
   - python=3.12
   - pandas>=2.0
