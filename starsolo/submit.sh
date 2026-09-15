@@ -34,6 +34,7 @@ snakemake "${SM_TARGET}" \
 -s Snakefile \
 --conda-prefix "${SM_CONDA_PREFIX}" \
 --use-conda \
+--conda-frontend conda \
 --jobscript cluster_qsub.sh \
 --cluster-config config/cluster.yaml \
 --cluster-sync "qsub -l tmem={cluster.tmem},h_vmem={cluster.h_vmem},h_rt={cluster.h_rt} -o ${SM_FOLDER} {cluster.submission_string}" \
