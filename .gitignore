@@ -7,3 +7,4 @@ logs/
 resources/
 submissions/
 .Rproj.user
+conda_envs/

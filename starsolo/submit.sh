@@ -25,9 +25,14 @@ cp config/cluster.yaml "${SM_FOLDER}/${SM_RUN_NAME}_cluster.yaml"
 
 echo "[submit] target=${SM_TARGET}  logs=${SM_FOLDER}"
 
+# Conda envs live with the project, not in the shared vyplab prefix (space).
+# Git-ignored; delete the folder to force a rebuild of every env.
+SM_CONDA_PREFIX="/SAN/neuroscience/direct_nanopore_rna/ariana_parse/parse_snrnaseq/conda_envs/"
+mkdir -p "${SM_CONDA_PREFIX}"
+
 snakemake "${SM_TARGET}" \
 -s Snakefile \
---conda-prefix "/SAN/vyplab/vyplab_reference_genomes/conda_envs/" \
+--conda-prefix "${SM_CONDA_PREFIX}" \
 --use-conda \
 --jobscript cluster_qsub.sh \
 --cluster-config config/cluster.yaml \
