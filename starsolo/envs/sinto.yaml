@@ -2,6 +2,8 @@ name: sinto
 channels:
   - conda-forge
   - bioconda
+  - nodefaults
 dependencies:
   - sinto>=0.10
-  - samtools=1.21
+  # Unpinned on purpose: samtools=1.21 conflicts with sinto's pysam/htslib.
+  - samtools

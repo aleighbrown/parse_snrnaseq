@@ -17,10 +17,10 @@ against the STAR index's sjdbOverhang.
 import argparse
 import json
 import sys
+from contextlib import closing
 from itertools import islice, product
 
-import dnaio
-
+from fastq_io import read_pairs
 from parse_barcodes import (cell_key, correction_map, load_table, read_cells,
                             round1_value, well_value)
 
@@ -52,8 +52,9 @@ def warn(msg):
     print(f"[layout] WARNING: {msg}", file=sys.stderr)
 
 
-with dnaio.open(a.fq1, a.fq2) as reader:
-    pairs = [(r1.sequence, r2.sequence) for r1, r2 in islice(reader, a.sample_reads)]
+with closing(read_pairs(a.fq1, a.fq2)) as reader:
+    pairs = [(r1.rstrip().decode(), r2.rstrip().decode())
+             for _, r1, _, _, r2, _ in islice(reader, a.sample_reads)]
 n = len(pairs)
 if n == 0:
     sys.exit("no reads")

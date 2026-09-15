@@ -1,13 +1,14 @@
 name: starsolo_py
+# nodefaults: keep Anaconda's `defaults` channel (added by the cluster's
+# condarc) out of the solve. No dnaio/isal: their compiled compression
+# libraries would not install on the cluster, so FASTQ I/O is plain Python
+# over pigz (scripts/fastq_io.py).
 channels:
   - conda-forge
   - bioconda
+  - nodefaults
 dependencies:
   - python=3.12
   - pandas>=2.0
   - numpy
-  - dnaio>=1.2
-  # fast gzip for dnaio/xopen; pigz as the fallback
-  - python-isal
-  - isa-l
   - pigz
