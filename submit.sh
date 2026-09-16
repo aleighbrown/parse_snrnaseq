@@ -46,6 +46,12 @@ echo "[submit] target=${SM_TARGET}  logs=${SM_FOLDER}"
 # and per-job runtimes near their measured baseline. Queue time does not count
 # against SGE h_rt -- it starts when the job starts -- so throttling costs
 # wall-clock but puts no job at risk of being killed.
+#
+# --rerun-triggers mtime: rerun a rule only when its input files are newer
+# than its outputs. Snakemake 7.32's default also reruns on changed params,
+# code or env, so a config edit or script tweak can pull finished jobs (e.g.
+# ~15 h of split_pipe_comb) back into the DAG. To force a rerun after changing
+# params, use -R <rule> or delete the output.
 
 snakemake "${SM_TARGET}" \
 -s workflow/Snakefile \
@@ -57,5 +63,6 @@ snakemake "${SM_TARGET}" \
 -j 6 \
 --nolock \
 --rerun-incomplete \
+--rerun-triggers mtime \
 --latency-wait 100 \
 2>&1 | tee "${SM_FOLDER}/snakemake.log"
