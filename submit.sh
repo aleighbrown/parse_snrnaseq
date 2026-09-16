@@ -58,6 +58,7 @@ snakemake "${SM_TARGET}" \
 --conda-prefix "/SAN/vyplab/vyplab_reference_genomes/conda_envs/" \
 --use-conda \
 --jobscript cluster_qsub.sh \
+--conda-frontend conda \
 --cluster-config config/cluster.yaml \
 --cluster-sync "qsub -l tmem={cluster.tmem},h_vmem={cluster.h_vmem},h_rt={cluster.h_rt} -o ${SM_FOLDER} {cluster.submission_string}" \
 -j 6 \
