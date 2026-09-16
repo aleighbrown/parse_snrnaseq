@@ -108,4 +108,6 @@ if DEMUX_MODE == "vireo":
     include: "rules/demux.smk"      # cellsnp-lite + vireo
 
 include: "rules/aggregate.smk"      # final assignment table + summary
+include: "rules/celltype.smk"       # QC + Harmony + Azimuth -> cell_annotations.csv
+                                    #   (own targets: celltype, celltype_test)
 

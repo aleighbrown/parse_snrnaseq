@@ -14,6 +14,10 @@ FASTQ (16 sublibraries: ParseFANS1..16) ─────────────�
        └─ cellsnp-lite ──► pileup of each cell at the reference SNP sites
             └─ vireo (-d donors.vcf) ──► each cell → named donor (+ doublet)
                  └─ aggregate ──► one assignment table + per-donor summary
+
+combined DGE + assignment table
+  └─ celltype ──► QC + doublets ──► Harmony clusters ──► Azimuth + marker labels
+                   └─► celltype/cell_annotations.csv   (target: celltype)
 ```
 
 ## The experiment
@@ -50,8 +54,10 @@ workflow/
           parse.smk       split-pipe --mode all / --mode comb
           demux.smk       cellsnp-lite + vireo
           aggregate.smk   combine assignments across sublibraries
+          celltype.smk    QC / doublets / Harmony / Azimuth on the combined DGE
   scripts/ extract_barcodes.py  aggregate_assignments.py  import_assignments.py
-  envs/   bcftools.yaml  demux.yaml  py.yaml
+           celltype_annotation.R
+  envs/   bcftools.yaml  demux.yaml  py.yaml  celltype.yaml (+ .post-deploy.sh)
 ```
 
 ## Stage 0 — the shared Parse human reference
@@ -188,6 +194,8 @@ rule. **`tmem` and `h_vmem` are per slot** on this cluster, so `-pe smp 4` with
 | `cellsnp` | 8 | 4G | 32G | 24:00:00 |
 | `vireo` | 4 | 8G | 32G | 12:00:00 |
 | `import_assignments` | 1 | 16G | 16G | 2:00:00 |
+| `celltype_annotation` | 8 | 24G | 192G | 48:00:00 |
+| `celltype_annotation_test` | 4 | 8G | 32G | 12:00:00 |
 
 ### Why split-pipe is three rules
 
@@ -353,6 +361,59 @@ Known gaps:
   reconciliation are not yet rules here — only the reference-based Vireo branch
   is implemented natively.
 
+## Stage 4 — cell type annotation
+
+A separate target, not part of `rule all`. It needs the combined DGE
+(`splitpipe/combined/all-sample/DGE_filtered/`) and
+`demux/donor_assignments.all_sublibraries.tsv`, and writes to
+`<results_dir>/celltype/`. It is the pipeline version of
+`01_qc_harmony_celltyping.Rmd`, but runs on every cell instead of a 50k
+subsample.
+
+```bash
+source submit.sh celltype_test   # 20k random cells, 32 GB job, output in celltype_test/
+source submit.sh celltype        # all 426k cells, one 192 GB job
+```
+
+Everything is done by `workflow/scripts/celltype_annotation.R`, in one job:
+
+1. **Donor join.** `s<N>` in `bc_wells` is mapped to a sublibrary name and
+   checked against barcode overlap with the donor table.
+2. **QC** on every cell: genes (200–10,000), transcripts (300–100,000) and
+   % mitochondrial (≤ 5). Thresholds are in `celltype.qc`.
+3. **Doublets.** scDblFinder runs per sublibrary on cells that pass the
+   low-quality filters. The expected rate is set in `celltype.doublets`, because
+   scDblFinder's own default is a 10x figure. The DBL calls in the donor table
+   are *not* used (see Demultiplexing).
+4. **Clustering.** Log-normalise, 2,000 HVGs, PCA, then Harmony on `donor_id`,
+   UMAP and Louvain clusters at 0.5 (plus 0.2 and 1.0).
+5. **Labels.** Azimuth (`humancortexref`) runs one sublibrary at a time, four in
+   parallel, and gives per-cell class / subclass / cluster plus a mapping score.
+   Each Seurat cluster also gets a majority Azimuth label and a marker-gene
+   broad class.
+
+| output | contents |
+|---|---|
+| `cell_annotations.csv` | **One row per split-pipe cell (426k).** Identifiers: `bc_wells`, `cell_id` (demux table form), `collab_barcode` (`<bc>__s<sublibrary>`), `barcode`, `sublibrary`, `mtx_row`, `bc1/2/3_well`. Also sort, donor, QC metrics, doublet score/class, `qc_pass`, `clustered`, `exclude_reason`, clusters, Azimuth `predicted.*`, `cluster_*` labels, UMAP coordinates, and the donor metadata. Cells that were not clustered have NA labels. |
+| `cluster_summary.tsv` | Per cluster: size, dominant donor, majority Azimuth class/subclass, marker class and margin, top markers |
+| `cluster_markers.tsv` | `FindAllMarkers`, up to 300 cells per cluster |
+| `qc_summary.tsv` | Per sublibrary: cells failing each filter, how many pass |
+| `celltype_report.pdf` | QC violins, doublet scores, PC R² before/after Harmony, UMAPs, marker dot plot, donor make-up per cluster |
+| `seurat_harmony.rds` | The Seurat object (counts + data, reductions; no scale.data or graphs) |
+
+**Why one big job.** Clustering is one in-memory computation over all cells,
+so it cannot be split across jobs. On this cluster a single large `-R y`
+reservation also starts sooner than a chain of mid-sized jobs that each wait in
+the queue. The memory estimate is in `workflow/rules/celltype.smk`. The log
+prints R's heap at every step and the peak at the end, so the 192 GB request
+can be trimmed after the first full run.
+
+**R environment.** By default Snakemake builds `workflow/envs/celltype.yaml`.
+Its post-deploy script then installs Azimuth, SeuratData and `humancortexref`
+from GitHub, which needs internet access on the login node. If an R env with
+these packages already exists, set `conda_envs.celltype` to its path and the
+rule activates it directly, like split-pipe.
+
 ## Not yet in the pipeline
 
 Downstream steps the collaborator ran by hand, worth adding next:
@@ -360,5 +421,4 @@ Downstream steps the collaborator ran by hand, worth adding next:
   pull cryptic splicing events (69 junctions in 54 genes were recoverable).
   split-pipe's BAMs were not kept; `starsolo/` is a separate workflow that
   regenerates them from split-pipe's called cells (see `starsolo/README.md`).
-- **Pegasus** QC / harmony clustering with `--demux`, using barcode-level
-  metadata of donor × sort.
+- ~~Pegasus QC / harmony clustering~~ → done in Seurat as Stage 4 (`celltype`).

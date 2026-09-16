@@ -52,10 +52,25 @@ parse_barcodes:
     bc2_start: null
     bc3_start: null
 
+# --- Tools (no conda) ----------------------------------------------------------
+# The cluster's conda can't solve the old envs (glibc too old), so jobs use tools
+# that are already installed. Check with `source submit.sh tools`.
+tools:
+  # Prepended to PATH in every job. Must provide python 3 with pandas and
+  # numpy, plus pigz, sinto and samtools (1.9 is fine) -- e.g. your base conda
+  # env's bin/. Tools already on your login PATH also work (qsub -V).
+  bin_dirs:
+    - /SAN/vyplab/alb_projects/miniconda3/bin
+  # One fixed STAR binary, e.g. the static Linux build from the STAR GitHub
+  # release (STAR_2.7.11b.zip -> Linux_x86_64_static/STAR), which runs on any glibc.
+  star: /SAN/vyplab/vyplab_reference_genomes/STAR/STAR-2.7.11b/bin/Linux_x86_64_static/STAR
+  # Jobs refuse to run if the binary reports a different version. It must match
+  # the STAR that built reference.dir. null = don't check.
+  star_version: 2.7.11b
+
 # --- STAR reference -------------------------------------------------------------
 # Shared lab resource, built once. Named <species>_v<gencode>_STAR<version>
-# because an index is tied to the STAR build that made it (envs/star.yaml pins
-# 2.7.11b). If this directory already contains a finished index (SA +
+# because an index is tied to the STAR build that made it (tools.star_version). If this directory already contains a finished index (SA +
 # genomeParameters.txt) it is used as-is and no build rule exists at all.
 # Same FASTA + GTF as the split-pipe reference, but with plain chr1.. contig
 # names (no "GRCh38-gencode-v42_" prefix).

@@ -23,6 +23,34 @@ how long does each step actually take?
 
 ## Before the first run
 
+### 0. Tools (no conda)
+
+The cluster's conda couldn't build envs for this workflow (glibc too old for
+current conda-forge builds, then a broken channel index), so the workflow
+doesn't use conda at all. `tools` in `config/config.yaml` sets what every job
+uses:
+
+- **`bin_dirs`** are put at the front of `PATH` in every job. Between them they
+  must provide `python` 3 with pandas and numpy, plus `pigz`, `sinto` and
+  `samtools`. Your base conda env's `bin/` is the intended choice. Any
+  samtools with `index -@` works (1.9 does), since it only sorts and indexes.
+  Without pigz, extraction falls back to gzip and is slower.
+- **`star`** is the path to one STAR binary. The static Linux build from the
+  STAR GitHub release (`STAR_2.7.11b.zip` → `Linux_x86_64_static/STAR`) runs on
+  any glibc.
+- **`star_version`** must match what that binary reports, and the STAR that built
+  `reference.dir`. Any job that runs STAR stops with an error if the version
+  differs.
+
+Check all of this on the login node in seconds:
+
+```bash
+source submit.sh tools
+```
+
+Snakemake wrappers don't get around the conda problem. Each wrapper ships its
+own env file, and Snakemake builds that env with the same conda.
+
 ### 1. Parse barcode tables (set)
 
 `parse_barcodes` in `config/config.yaml` points at the tables split-pipe
@@ -75,7 +103,7 @@ donor-assigned one:
 
 Built at `/SAN/vyplab/vyplab_reference_genomes/STAR/human_v42_STAR2.7.11b`: the
 same GENCODE v42 FASTA + GTF as the split-pipe reference, STAR 2.7.11b
-(pinned in `envs/star.yaml`), `sjdbOverhang 149`, with a
+(`tools.star_version`), `sjdbOverhang 149`, with a
 `build_provenance.txt` inside. Contigs are plain `chr1`, **not** split-pipe's
 `GRCh38-gencode-v42_chr1`.
 
@@ -90,6 +118,7 @@ From this directory (`starsolo/`), in screen on the login node:
 
 ```bash
 snakemake -n                      # dry run
+source submit.sh tools            # tool check (seconds)
 source submit.sh reference        # STAR index (can go first; needs no barcode tables)
 source submit.sh layout           # whitelist + read layout: minutes
 source submit.sh extract          # + extraction + validation vs split-pipe

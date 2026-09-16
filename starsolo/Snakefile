@@ -23,6 +23,7 @@
 # =============================================================================
 import os
 import re
+import shlex
 
 import pandas as pd
 from snakemake.exceptions import WorkflowError
@@ -37,6 +38,36 @@ REF_DIR = REF["dir"].rstrip("/")
 STAR = config["star"]
 BC = config["parse_barcodes"]
 LAYOUT = BC.get("layout") or {}
+
+# --- tools: no conda ---------------------------------------------------------
+# The cluster's conda can't solve these envs (old glibc), so every job runs on
+# tools that already exist there: python/pandas/numpy/pigz/sinto from
+# tools.bin_dirs, STAR from one fixed binary. samtools (1.9 is fine: only
+# `index -@` and `sort -@ -o` are used) comes from bin_dirs or your PATH.
+TOOLS = config.get("tools") or {}
+_bin_dirs = [str(d).rstrip("/") for d in (TOOLS.get("bin_dirs") or [])]
+_star_bin = str(TOOLS.get("star") or "")
+_star_want = str(TOOLS.get("star_version") or "")
+# No f-strings here: Snakemake 7's parser pads them with spaces on Python 3.12.
+shell.prefix(
+    "set -euo pipefail; "
+    + ("export PATH=" + shlex.quote(":".join(_bin_dirs)) + ':"$PATH"; ' if _bin_dirs else "")
+    + "STAR_BIN=" + shlex.quote(_star_bin) + "; "
+    + "STAR_WANT=" + shlex.quote(_star_want) + "; "
+)
+
+# Prepended to every rule that runs STAR: fail early, and loudly, if the binary
+# is missing or is not the version the reference was built with.
+CHECK_STAR = r"""
+if [ -z "$STAR_BIN" ] || [ ! -x "$STAR_BIN" ]; then
+    echo "tools.star in config/config.yaml is unset or not executable: '$STAR_BIN'" >&2
+    exit 1
+fi
+if [ -n "$STAR_WANT" ] && [ "$("$STAR_BIN" --version)" != "$STAR_WANT" ]; then
+    echo "STAR at $STAR_BIN is $("$STAR_BIN" --version), config says tools.star_version=$STAR_WANT" >&2
+    exit 1
+fi
+"""
 
 subs = (
     pd.read_csv(config["sublibraries"], sep="\t", comment="#", dtype=str)
@@ -102,7 +133,7 @@ REF_BUILT = os.path.exists(os.path.join(REF_DIR, "SA")) and os.path.exists(
 
 
 # --- targets -----------------------------------------------------------------
-localrules: all, reference, layout, extract, strand, split
+localrules: all, tools, reference, layout, extract, strand, split
 
 rule all:
     input:
@@ -129,6 +160,24 @@ rule split:
     input:
         expand(RESULTS + "/split/{sublib}/.split.done", sublib=SUBLIBS),
 
+# `source submit.sh tools`: runs on the login node in seconds and fails if any
+# tool the jobs need is missing. Never cached -- no output file.
+rule tools:
+    shell:
+        r"""
+        """ + CHECK_STAR + r"""
+        echo "STAR:    $STAR_BIN ($("$STAR_BIN" --version))"
+        echo "python:  $(command -v python) ($(python --version 2>&1))"
+        python -c 'import pandas, numpy; print("pandas", pandas.__version__, "| numpy", numpy.__version__)'
+        echo "samtools: $(command -v samtools) ($(samtools --version | head -n1))"
+        # `samtools index -@` is the newest option used; fail if this build lacks it.
+        # (Usage text captured first: bare `samtools index` exits non-zero.)
+        index_usage=$(samtools index 2>&1 || true)
+        grep -q -- '-@' <<< "$index_usage" || {{ echo "samtools index has no -@ option" >&2; exit 1; }}
+        echo "sinto:   $(command -v sinto || echo 'MISSING -- needed only for the split target')"
+        echo "pigz:    $(command -v pigz || echo 'MISSING -- extraction falls back to gzip, slower')"
+        """
+
 
 # --- whitelist ---------------------------------------------------------------
 rule make_whitelist:
@@ -144,8 +193,6 @@ rule make_whitelist:
         tag=lambda wc: subs.loc[wc.sublib, "cells_tag"],
     log:
         "logs/whitelist/{sublib}.log",
-    conda:
-        "envs/py.yaml"
     shell:
         r"""
         python {params.scripts}/make_whitelist.py \
@@ -182,8 +229,6 @@ rule read_layout:
         overhang=REF["sjdb_overhang"],
     log:
         "logs/extract/{sublib}.layout.log",
-    conda:
-        "envs/py.yaml"
     shell:
         r"""
         python {params.scripts}/detect_layout.py \
@@ -219,8 +264,6 @@ rule extract_reads:
     threads: nthreads("extract_reads")
     log:
         "logs/extract/{sublib}.extract.log",
-    conda:
-        "envs/py.yaml"
     shell:
         r"""
         python {params.scripts}/extract_reads.py \
@@ -248,8 +291,6 @@ rule validate_extraction:
         sort_col=config["cells"]["sort_column"],
     log:
         "logs/extract/{sublib}.validate.log",
-    conda:
-        "envs/py.yaml"
     shell:
         r"""
         python {params.scripts}/compare_splitpipe.py \
@@ -277,11 +318,9 @@ if not REF_BUILT:
         threads: nthreads("star_index")
         log:
             "logs/reference/star_index.log",
-        conda:
-            "envs/star.yaml"
         shell:
             r"""
-            set -euo pipefail
+            """ + CHECK_STAR + r"""
             rm -rf {params.tmp}
             mkdir -p {params.tmp} {output}
             # STAR needs the GTF as plain text.
@@ -290,7 +329,7 @@ if not REF_BUILT:
                 *)    ln -s "$(readlink -f {input.gtf})" {params.tmp}/genes.gtf ;;
             esac
 
-            STAR --runMode genomeGenerate \
+            "$STAR_BIN" --runMode genomeGenerate \
                 --runThreadN {threads} \
                 --genomeDir {output} \
                 --genomeFastaFiles {input.fasta} \
@@ -306,7 +345,7 @@ if not REF_BUILT:
             {{
                 echo "built:          $(date -Iseconds)"
                 echo "by:             ${{USER:-unknown}}@$(hostname)"
-                echo "STAR:           $(STAR --version)"
+                echo "STAR:           $("$STAR_BIN" --version)"
                 echo "fasta:          {input.fasta}"
                 echo "gtf:            {input.gtf}"
                 echo "sjdbOverhang:   {params.overhang}"
@@ -350,16 +389,13 @@ rule strand_test:
     threads: nthreads("strand_test")
     log:
         "logs/star/{sublib}.strand.log",
-    conda:
-        "envs/star.yaml"
     shell:
         r"""
-        set -euo pipefail
-        """ + CBLEN_SH + r"""
+        """ + CHECK_STAR + CBLEN_SH + r"""
         : > {log}
         for s in Forward Reverse; do
             mkdir -p {params.outdir}/$s
-            STAR --runThreadN {threads} \
+            "$STAR_BIN" --runThreadN {threads} \
                 --genomeDir {input.genome} \
                 --readFilesIn {input.r1} {input.r2} \
                 --readFilesCommand zcat \
@@ -392,14 +428,12 @@ rule star_pass1:
     threads: nthreads("star_pass1")
     log:
         "logs/star/{sublib}.pass1.log",
-    conda:
-        "envs/star.yaml"
     shell:
         r"""
-        set -euo pipefail
+        """ + CHECK_STAR + r"""
         rm -rf {params.tmp}
         mkdir -p $(dirname {params.tmp})
-        STAR --runThreadN {threads} \
+        "$STAR_BIN" --runThreadN {threads} \
             --genomeDir {input.genome} \
             --readFilesIn {input.r1} \
             --readFilesCommand zcat \
@@ -424,8 +458,6 @@ rule pool_junctions:
         min_unique=STAR.get("pass1_min_unique_reads", 3),
     log:
         "logs/star/pool_junctions.log",
-    conda:
-        "envs/py.yaml"
     shell:
         r"""
         python {params.scripts}/pool_junctions.py {input} \
@@ -476,22 +508,20 @@ rule star_solo:
     threads: nthreads("star_solo")
     log:
         "logs/star/{sublib}.solo.log",
-    conda:
-        "envs/star.yaml"
     shell:
         r"""
-        set -euo pipefail
+        """ + CHECK_STAR + r"""
         if [ -n "{params.fixed_strand}" ]; then
             STRAND={params.fixed_strand}
         else
             STRAND=$(cat {input.strand})
         fi
         """ + CBLEN_SH + r"""
-        echo "[star_solo] strand=$STRAND cb_len=$CBLEN" > {log}
+        echo "[star_solo] STAR $("$STAR_BIN" --version) at $STAR_BIN, strand=$STRAND cb_len=$CBLEN" > {log}
         rm -rf {params.tmp}
         mkdir -p $(dirname {params.tmp})
 
-        STAR --runThreadN {threads} \
+        "$STAR_BIN" --runThreadN {threads} \
             --genomeDir {input.genome} \
             --readFilesIn {input.r1} {input.r2} \
             --readFilesCommand zcat \
@@ -516,8 +546,6 @@ rule index_bam:
     output:
         SOLO + "/Aligned.sortedByCoord.out.bam.bai",
     threads: nthreads("index_bam")
-    conda:
-        "envs/star.yaml"
     shell:
         "samtools index -@ {threads} {input}"
 
@@ -539,8 +567,6 @@ rule split_groups:
         sort_col=config["cells"]["sort_column"],
     log:
         "logs/split/{sublib}.groups.log",
-    conda:
-        "envs/py.yaml"
     shell:
         r"""
         python {params.scripts}/split_groups.py \
@@ -564,8 +590,6 @@ rule split_bam:
     threads: nthreads("split_bam")
     log:
         "logs/split/{sublib}.sinto.log",
-    conda:
-        "envs/sinto.yaml"
     shell:
         r"""
         set -euo pipefail

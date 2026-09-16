@@ -141,3 +141,22 @@ import_assignments:
     tmem:   16G
     h_rt:   "2:00:00"
     submission_string: " "
+
+# --- Stage 4: cell type annotation --------------------------------------------
+# ONE large reservation rather than several mid-sized jobs: clustering is a
+# single in-memory computation over all 426k cells, and one big -R y request
+# starts sooner than a chain of jobs that each queue in turn. 8 x 24G = 192G;
+# expected peak is ~60-90G plus Azimuth workers (sizing in
+# workflow/rules/celltype.smk). Trim once the log's peak figure is known.
+celltype_annotation:
+    h_vmem: 24G
+    tmem:   24G
+    h_rt:   "48:00:00"
+    submission_string: "-pe smp 8 -R y"
+
+# 20k-cell smoke test. 4 x 8G = 32G.
+celltype_annotation_test:
+    h_vmem: 8G
+    tmem:   8G
+    h_rt:   "12:00:00"
+    submission_string: "-pe smp 4 -R y"

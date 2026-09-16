@@ -19,6 +19,11 @@
 # not apply to it. Rules with a real recipe still use workflow/envs/*.yaml.
 conda_envs:
   spipe: /SAN/vyplab/FUS_RNA/conda_envs/spipe    # split-pipe v1.9.0
+  # R env for the celltype rules (Seurat 5, harmony, Azimuth + humancortexref,
+  # scDblFinder). null = build workflow/envs/celltype.yaml, whose post-deploy
+  # step installs Azimuth and the reference from GitHub. If an env with those
+  # already exists on the cluster, put its path here and skip that build.
+  celltype: null
 
 # --- Stage 0: genome reference -----------------------------------------------
 genome:
@@ -189,6 +194,60 @@ vireo:
   genotype_tag: GT
   n_donors: 36
 
+# --- Stage 4: cell type annotation (targets: celltype, celltype_test) ---------
+# Input is splitpipe/combined/<cell_meta dir>/count_matrix.mtx plus the demux
+# table; output goes to <results_dir>/celltype/. See workflow/rules/celltype.smk.
+celltype:
+  seed: 42
+  # true: only cells with a donor go into clustering (Harmony corrects on
+  # donor_id, and "unassigned" is a mix of donors, not a batch). QC and doublet
+  # calls are still made for, and reported on, every cell.
+  only_assigned: true
+  # Cells sampled for the celltype_test smoke test.
+  test_n_cells: 20000
+
+  # split-pipe has already filtered cells, so this is a light trim. For
+  # reference, across all 426k cells: genes < 200 = 0.6%, genes > 10000 = 0.6%,
+  # transcripts < 300 = 1.0%. Transcripts reach 2.7M at the very top, hence a
+  # hard ceiling -- per-sublibrary MAD bounds are useless on a distribution this
+  # wide (5 MADs lands at ~1M).
+  qc:
+    min_genes: 200
+    max_genes: 10000
+    min_counts: 300          # transcripts (UMIs)
+    max_counts: 100000       # ~99.8th percentile; null = no ceiling
+    max_pct_mt: 5            # nuclei: mito reads should be near zero
+    min_cells_per_gene: 3
+
+  # scDblFinder, run per sublibrary. Its built-in rate (0.8% per 1000 cells) is
+  # a 10x figure and would call ~20% of each sublibrary here. For Parse the
+  # rate is the barcode collision rate within a sublibrary:
+  #   1 - exp(-cells_loaded / 96^3)
+  # which is ~3% for the 26k cells recovered and ~7% if ~60k were loaded per
+  # sublibrary. dbr_sd lets scDblFinder move within that range.
+  doublets:
+    dbr: 0.05
+    dbr_sd: 0.03
+    remove: true
+
+  clustering:
+    n_hvg: 2000
+    n_pcs: 30
+    # Batch variables. The FANS sort (`sample`) is left out on purpose: TDP-43-
+    # negative nuclei may really differ, and that should survive correction.
+    # If the report's R^2 page shows sublibrary structure surviving, add it.
+    harmony_vars: [donor_id]
+    resolution: 0.5          # -> seurat_clusters
+    extra_resolutions: [0.2, 1.0]   # extra RNA_snn_res.* columns in the CSV
+
+  azimuth:
+    run: true
+    # A SeuratData name (installed in the env) or a directory holding an
+    # Azimuth reference (ref.Rds + idx.annoy).
+    reference: humancortexref
+    # Sublibraries mapped at once. Each worker holds one ~26k-cell query.
+    workers: 4
+
 # --- Contig naming ------------------------------------------------------------
 # Only relevant to the vireo branch: applied when building the genotype panel,
 # to make its contigs match the BAM. With the GENCODE reference above the BAM is
@@ -216,3 +275,6 @@ threads:
   prepare_reference_vcf: 4
   cellsnp: 8
   vireo: 4
+  # One big shared-memory job; 8 x 24G in cluster.yaml.
+  celltype_annotation: 8
+  celltype_annotation_test: 4

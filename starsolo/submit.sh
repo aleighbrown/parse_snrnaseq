@@ -1,6 +1,7 @@
 # Run from starsolo/ on a login node, inside screen (same pattern as ../submit.sh):
 #
 #   screen -S starsolo
+#   source submit.sh tools           # check python/pysam/sinto/pigz/STAR (seconds)
 #   source submit.sh                 # pilot (rule all)
 #   source submit.sh layout          # barcode read layout only
 #   source submit.sh reference       # STAR index only
@@ -25,16 +26,15 @@ cp config/cluster.yaml "${SM_FOLDER}/${SM_RUN_NAME}_cluster.yaml"
 
 echo "[submit] target=${SM_TARGET}  logs=${SM_FOLDER}"
 
-# Conda envs live with the project, not in the shared vyplab prefix (space).
-# Git-ignored; delete the folder to force a rebuild of every env.
-SM_CONDA_PREFIX="/SAN/neuroscience/direct_nanopore_rna/ariana_parse/parse_snrnaseq/conda_envs/"
-mkdir -p "${SM_CONDA_PREFIX}"
+# No conda: jobs use config tools.bin_dirs and tools.star (see config.yaml).
+# `source submit.sh tools` checks them on the login node in seconds.
+if [ "${SM_TARGET}" = "tools" ]; then
+    snakemake tools -s Snakefile -j 1 --nolock
+    return 2>/dev/null || true
+fi
 
 snakemake "${SM_TARGET}" \
 -s Snakefile \
---conda-prefix "${SM_CONDA_PREFIX}" \
---use-conda \
---conda-frontend conda \
 --jobscript cluster_qsub.sh \
 --cluster-config config/cluster.yaml \
 --cluster-sync "qsub -l tmem={cluster.tmem},h_vmem={cluster.h_vmem},h_rt={cluster.h_rt} -o ${SM_FOLDER} {cluster.submission_string}" \

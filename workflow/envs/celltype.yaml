@@ -1,0 +1,47 @@
+# R env for workflow/rules/celltype.smk.
+# Azimuth, SeuratData and SeuratDisk have no conda recipes; the post-deploy
+# script (celltype.post-deploy.sh, same basename) installs them from GitHub,
+# then the humancortexref reference. Everything Azimuth imports is listed here
+# so that step compiles nothing heavy.
+# If a working env already exists, set conda_envs.celltype instead.
+name: celltype
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults
+dependencies:
+  - r-base=4.4
+  - r-seurat>=5.1
+  - r-seuratobject>=5.0
+  - r-harmony>=1.2
+  - r-data.table
+  - r-matrix
+  - r-ggplot2
+  - r-patchwork
+  - r-future
+  - r-rhpcblasctl
+  - r-scattermore
+  - r-remotes
+  - bioconductor-scdblfinder
+  - bioconductor-singlecellexperiment
+  - bioconductor-biocparallel
+  - bioconductor-glmgampoi
+  - mawk
+  # --- Azimuth's imports ---
+  - r-signac
+  - r-shiny
+  - r-shinybs
+  - r-shinydashboard
+  - r-shinyjs
+  - r-dt
+  - r-googlesheets4
+  - r-hdf5r
+  - r-htmltools
+  - r-plotly
+  - r-rlang
+  - r-stringr
+  - r-jsonlite
+  - bioconductor-bsgenome.hsapiens.ucsc.hg38
+  - bioconductor-ensdb.hsapiens.v86
+  - bioconductor-jaspar2020
+  - bioconductor-tfbstools
