@@ -151,12 +151,12 @@ import_assignments:
 celltype_annotation:
     h_vmem: 24G
     tmem:   24G
-    h_rt:   "48:00:00"
-    submission_string: "-pe smp 8 -R y"
+    h_rt:   "24:00:00"
+    submission_string: "-pe smp 4 -R y"
 
 # 20k-cell smoke test. 4 x 8G = 32G.
 celltype_annotation_test:
-    h_vmem: 8G
-    tmem:   8G
+    h_vmem: 16G
+    tmem:   16G
     h_rt:   "12:00:00"
-    submission_string: "-pe smp 4 -R y"
+    submission_string: "-pe smp 2 -R y"
