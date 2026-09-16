@@ -19,11 +19,7 @@
 # not apply to it. Rules with a real recipe still use workflow/envs/*.yaml.
 conda_envs:
   spipe: /SAN/vyplab/FUS_RNA/conda_envs/spipe    # split-pipe v1.9.0
-  # R env for the celltype rules (Seurat 5, harmony, Azimuth + humancortexref,
-  # scDblFinder). null = build workflow/envs/celltype.yaml, whose post-deploy
-  # step installs Azimuth and the reference from GitHub. If an env with those
-  # already exists on the cluster, put its path here and skip that build.
-  celltype: null
+  # (The celltype rules use a Singularity image instead -- see celltype.container.)
 
 # --- Stage 0: genome reference -----------------------------------------------
 genome:
@@ -198,6 +194,18 @@ vireo:
 # Input is splitpipe/combined/<cell_meta dir>/count_matrix.mtx plus the demux
 # table; output goes to <results_dir>/celltype/. See workflow/rules/celltype.smk.
 celltype:
+  # R runs inside this image via `singularity exec` (conda-forge's current R
+  # builds need glibc >= 2.28, newer than the cluster's).
+  #   singularity pull seurat.sif docker://satijalab/seurat:latest
+  # It supplies R 4.5.2, Seurat 5.5.1, harmony 2.0.5.
+  container: /SAN/vyplab/alb_projects/tools/seurat.sif
+  # Extra R library, searched before the image's own. Holds what the image
+  # lacks: Azimuth (+ BSgenome / TFBSTools / Signac ...), humancortexref,
+  # scDblFinder, RhpcBLASctl. Installed from inside the image with
+  #   singularity exec --cleanenv -B /SAN --env R_LIBS=<this dir> seurat.sif Rscript ...
+  r_libs: /SAN/vyplab/alb_projects/tools/R_celltype_lib
+  # Host paths mounted into the container: inputs, outputs, script, r_libs.
+  binds: [/SAN]
   seed: 42
   # true: only cells with a donor go into clustering (Harmony corrects on
   # donor_id, and "unassigned" is a mix of donors, not a batch). QC and doublet

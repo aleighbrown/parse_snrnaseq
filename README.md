@@ -57,7 +57,7 @@ workflow/
           celltype.smk    QC / doublets / Harmony / Azimuth on the combined DGE
   scripts/ extract_barcodes.py  aggregate_assignments.py  import_assignments.py
            celltype_annotation.R
-  envs/   bcftools.yaml  demux.yaml  py.yaml  celltype.yaml (+ .post-deploy.sh)
+  envs/   bcftools.yaml  demux.yaml  py.yaml
 ```
 
 ## Stage 0 — the shared Parse human reference
@@ -408,11 +408,25 @@ the queue. The memory estimate is in `workflow/rules/celltype.smk`. The log
 prints R's heap at every step and the peak at the end, so the 192 GB request
 can be trimmed after the first full run.
 
-**R environment.** By default Snakemake builds `workflow/envs/celltype.yaml`.
-Its post-deploy script then installs Azimuth, SeuratData and `humancortexref`
-from GitHub, which needs internet access on the login node. If an R env with
-these packages already exists, set `conda_envs.celltype` to its path and the
-rule activates it directly, like split-pipe.
+**R environment: a Singularity image, not conda.** conda-forge's current R
+builds need glibc 2.28 or newer, which is newer than this cluster has, so
+a conda env for Seurat 5 + Azimuth cannot be solved here. The rule runs
+`singularity exec --cleanenv` on `celltype.container`
+(`satijalab/seurat`: R 4.5.2, Seurat 5.5.1, harmony). What the image lacks
+(Azimuth and its imports, `humancortexref`, scDblFinder, RhpcBLASctl) is
+installed into `celltype.r_libs` on SAN, which is put first on the library
+path through `R_LIBS`. To add a package to that library:
+
+```bash
+singularity exec --cleanenv -B /SAN --env R_LIBS=/SAN/vyplab/alb_projects/tools/R_celltype_lib \
+    /SAN/vyplab/alb_projects/tools/seurat.sif Rscript -e \
+    'options(repos = BiocManager::repositories()); BiocManager::install("PKG", lib = "/SAN/vyplab/alb_projects/tools/R_celltype_lib", update = FALSE)'
+```
+
+Pass `lib =` as a literal path: the image's Renviron appends its own
+libraries to `R_LIBS`, so `Sys.getenv("R_LIBS")` is a colon-separated list
+inside the container. `submit.sh` needs no `--use-singularity`, because the
+rule calls singularity itself.
 
 ## Not yet in the pipeline
 

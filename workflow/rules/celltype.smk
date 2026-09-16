@@ -37,10 +37,16 @@ CT_DGE = os.path.join(
 )
 CT_SCRIPT = os.path.join(workflow.basedir, "scripts", "celltype_annotation.R")
 
-# Path to an existing R env with Seurat / harmony / Azimuth / scDblFinder, or
-# null to build workflow/envs/celltype.yaml. As with split-pipe, an existing env
-# is activated in the shell block rather than via `conda:` (see README).
-CT_ENV = (config.get("conda_envs") or {}).get("celltype")
+# R runs inside a Singularity image, not a conda env: the login node's glibc
+# is too old for current conda-forge R builds. The image (satijalab/seurat)
+# supplies R 4.5 / Seurat 5 / harmony; Azimuth, humancortexref, scDblFinder
+# and RhpcBLASctl live in a separate library on SAN, put first on the
+# library path through R_LIBS. Called with `singularity exec` in the shell
+# block, not `container:`, so submit.sh needs no --use-singularity and the
+# other rules are untouched.
+CT_SIF = CT["container"]
+CT_RLIB = CT["r_libs"]
+CT_BINDS = ",".join(CT.get("binds") or ["/SAN"])
 
 localrules: celltype, celltype_test
 
@@ -93,29 +99,29 @@ def ct_args(out_dir, n_cells, threads):
     return " ".join(shlex.quote("--%s=%s" % (k, v)) for k, v in args.items())
 
 
-_CT_ACTIVATE = (
-    r"""
-        set +u
-        source "$(conda info --base)/etc/profile.d/conda.sh"
-        conda activate "{params.env}"
-        set -u
-"""
-    if CT_ENV
-    else ""
-)
-
-_CT_SHELL = (
-    r"""
+_CT_SHELL = r"""
         set -euo pipefail
-"""
-    + _CT_ACTIVATE
-    + r"""
+        command -v singularity > /dev/null || {{ echo "singularity not on PATH" > {log}; exit 1; }}
+
         # fread(cmd=) spools the smoke test's awk output (~1 GB) to R's
         # tempdir; use the job's scratch if SGE set one, else the output dir.
-        export TMPDIR="${{TMPDIR:-$(dirname {output.annotations})}}"
-        Rscript {params.script} {params.args} > {log} 2>&1
+        # --cleanenv drops the host environment, so TMPDIR is passed (and,
+        # when it is not already under a bound path, bound) explicitly.
+        TMPDIR="${{TMPDIR:-$(dirname {output.annotations})}}"
+        BINDS="{params.binds}"
+        case "$TMPDIR" in
+            /SAN/*) ;;
+            *) BINDS="$BINDS,$TMPDIR" ;;
+        esac
+
+        # R_LIBS: the image's Renviron appends its own libraries after it, so
+        # the SAN library comes first and the image's Seurat is still used.
+        singularity exec --cleanenv \
+            -B "$BINDS" \
+            --env R_LIBS={params.rlib},TMPDIR="$TMPDIR" \
+            {params.sif} \
+            Rscript {params.script} {params.args} > {log} 2>&1
 """
-)
 
 
 rule celltype_annotation:
@@ -131,7 +137,9 @@ rule celltype_annotation:
         **ct_outputs(RESULTS + "/celltype"),
     params:
         script=CT_SCRIPT,
-        env=CT_ENV or "",
+        sif=CT_SIF,
+        rlib=CT_RLIB,
+        binds=CT_BINDS,
         args=ct_args(RESULTS + "/celltype", 0, nthreads("celltype_annotation")),
     threads: nthreads("celltype_annotation")
     resources:
@@ -139,14 +147,12 @@ rule celltype_annotation:
         runtime=2880,
     log:
         "logs/celltype/celltype_annotation.log",
-    conda:
-        None if CT_ENV else "../envs/celltype.yaml"
     shell:
         _CT_SHELL
 
 
 # Same script on a random subset of cells, into its own directory, with its own
-# (small) entry in cluster.yaml. Proves the env, the inputs and every step
+# (small) entry in cluster.yaml. Proves the image + library, the inputs and every step
 # before the big reservation is spent. Reading the subset still streams the
 # whole 16 GB mtx once through awk, so it is not instant.
 use rule celltype_annotation as celltype_annotation_test with:
@@ -154,7 +160,9 @@ use rule celltype_annotation as celltype_annotation_test with:
         **ct_outputs(RESULTS + "/celltype_test"),
     params:
         script=CT_SCRIPT,
-        env=CT_ENV or "",
+        sif=CT_SIF,
+        rlib=CT_RLIB,
+        binds=CT_BINDS,
         args=ct_args(
             RESULTS + "/celltype_test",
             CT["test_n_cells"],
