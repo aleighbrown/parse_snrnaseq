@@ -1,326 +1,69 @@
 #!/usr/bin/env Rscript
 # =============================================================================
-# First-pass QC, Harmony clustering and cell type annotation of the combined
-# split-pipe DGE (all 16 sublibraries, all-sample).
+# Cell typing, stage 3 of 3: final QC call, clustering, labels, outputs.
 #
-#   count_matrix.mtx (cells x genes) + donor assignment table
-#     -> per-cell QC: genes, transcripts, % mitochondrial
-#     -> scDblFinder, one sublibrary at a time
+#   <prep>/cell_meta.rds + <prep>/counts/*.rds + <doublets>/*.tsv
+#     -> doublet + upper-bound filters -> qc_summary.tsv
 #     -> Seurat log-norm / HVG / PCA -> Harmony -> UMAP + Louvain clusters
-#     -> Azimuth (humancortexref), one sublibrary at a time
+#     -> Azimuth (humancortexref), one sublibrary per worker process
 #     -> marker-gene broad class per cluster
 #     -> cell_annotations.csv: ONE ROW PER SPLIT-PIPE CELL, including the ones
 #        QC removed, so every barcode can be traced to why it is (not) labelled
 #
-# Pipeline version of 01_qc_harmony_celltyping.Rmd. That notebook works on a
-# 50k-cell subsample. This script takes all 426k cells in one large-memory job
-# (see workflow/rules/celltype.smk for the sizing). Called as
-#   Rscript celltype_annotation.R --key=value ...
+# Pipeline version of 01_qc_harmony_celltyping.Rmd. Clustering is one
+# in-memory computation over every cell, so this stage is the one large job;
+# the slow, per-sublibrary doublet calling happens before it in small jobs.
+# See workflow/rules/celltype.smk.
 # =============================================================================
 
+script_dir <- function() {
+  f <- sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE))
+  dirname(normalizePath(f))
+}
+source(file.path(script_dir(), "celltype_common.R"))
 suppressPackageStartupMessages({
   library(Seurat)
   library(harmony)
-  library(data.table)
   library(Matrix)
   library(ggplot2)
   library(patchwork)
 })
 
-# --- arguments ---------------------------------------------------------------
-parse_args <- function(args) {
-  bad <- !grepl("^--[^=]+=", args)
-  if (any(bad)) stop("Arguments must look like --key=value, got: ", paste(args[bad], collapse = " "))
-  setNames(as.list(sub("^--[^=]+=", "", args)), sub("^--([^=]+)=.*", "\\1", args))
-}
-opt <- parse_args(commandArgs(trailingOnly = TRUE))
-
-required <- c(
-  "dge_dir", "donor_table", "sublibraries", "out_dir", "threads", "seed",
-  "n_cells", "only_assigned",
-  "min_genes", "max_genes", "min_counts", "max_counts", "max_pct_mt", "min_cells_per_gene",
-  "doublet_dbr", "doublet_dbr_sd", "remove_doublets",
-  "n_hvg", "n_pcs", "harmony_vars", "cluster_resolution", "extra_resolutions",
-  "run_azimuth", "azimuth_reference", "azimuth_workers"
-)
-if (length(miss <- setdiff(required, names(opt)))) stop("Missing arguments: ", paste(miss, collapse = ", "))
-
-num  <- function(k) as.numeric(opt[[k]])
-flag <- function(k) tolower(opt[[k]]) %in% c("true", "1", "yes")
-csv  <- function(k) { v <- trimws(strsplit(opt[[k]], ",")[[1]]); v[nzchar(v)] }
-num_or_null <- function(k) if (tolower(opt[[k]]) %in% c("", "none", "null", "na")) NULL else num(k)
-
+need_args(c("prep_dir", "doublet_dir", "sublibraries", "out_dir", "threads", "seed",
+            "only_assigned", "min_genes", "max_genes", "min_counts", "max_counts", "max_pct_mt",
+            "min_cells_per_gene", "remove_doublets",
+            "n_hvg", "n_pcs", "harmony_vars", "cluster_resolution", "extra_resolutions",
+            "run_azimuth", "azimuth_reference", "azimuth_workers"))
 threads <- as.integer(num("threads"))
 seed    <- as.integer(num("seed"))
 n_pcs   <- as.integer(num("n_pcs"))
-harmony_vars <- csv("harmony_vars")
-resolutions  <- unique(c(as.numeric(csv("extra_resolutions")), num("cluster_resolution")))  # primary LAST
+harmony_vars  <- csv("harmony_vars")
+resolutions   <- unique(c(as.numeric(csv("extra_resolutions")), num("cluster_resolution")))  # primary LAST
+only_assigned <- flag("only_assigned")
+max_counts    <- num("max_counts")
+setup_threads(threads)
 out <- function(f) file.path(opt$out_dir, f)
 dir.create(opt$out_dir, recursive = TRUE, showWarnings = FALSE)
-
-# --- threading ---------------------------------------------------------------
-# NO fork() anywhere in this script. fread() has already run OpenMP threads in
-# this process by the time anything parallel starts, and GNU OpenMP is not
-# fork-safe: a forked child that touches OpenMP (xgboost inside scDblFinder
-# did) can wait forever on a lock no thread will release. The first test run
-# sat at 0 progress in scDblFinder's MulticoreParam until h_rt killed it. So
-# parallel work uses fresh R processes (BiocParallel::SnowParam), each sent
-# only its own sublibrary's counts.
-# BLAS stays single-threaded except around PCA.
-setDTthreads(threads)
-set_blas <- function(n) if (requireNamespace("RhpcBLASctl", quietly = TRUE)) RhpcBLASctl::blas_set_num_threads(n)
-set_blas(1)
-options(future.globals.maxSize = Inf)
-
-snow_param <- function(n) {
-  if (n > 1) {
-    BiocParallel::SnowParam(workers = n, type = "SOCK", RNGseed = seed, log = TRUE)
-  } else {
-    BiocParallel::SerialParam(RNGseed = seed, log = TRUE)
-  }
-}
-
-# RunUMAP reads its thread count (uwot threads, not forks) from the future plan.
-# Only wrap calls that do NOT dispatch futures: under a multicore plan those
-# would fork. ScaleData does dispatch futures, so it runs unwrapped.
-with_workers <- function(expr) {
-  if (threads > 1 && future::supportsMulticore()) {
-    old <- future::plan(future::multicore, workers = threads)
-    on.exit(future::plan(old), add = TRUE)
-  }
-  expr
-}
-
-# --- logging -----------------------------------------------------------------
-# The GB figure is R's own heap after a gc -- use it (and the peak printed at the
-# end) to trim config/cluster.yaml once a full run has reported back.
-t0 <- Sys.time()
-step <- function(...) {
-  mem <- sum(gc(verbose = FALSE)[, 2]) / 1024
-  message(sprintf("[%s | %6.1f min | %6.1f GB] ", format(Sys.time(), "%H:%M:%S"),
-                  as.numeric(difftime(Sys.time(), t0, units = "mins")), mem), ...)
-}
 step("threads=", threads, "  out_dir=", opt$out_dir)
 
-# =============================================================================
-# 1. Cell metadata + donor join  (metadata only, no matrix yet)
-# =============================================================================
-cells <- fread(file.path(opt$dge_dir, "cell_metadata.csv"))
-genes <- fread(file.path(opt$dge_dir, "all_genes.csv"))
-
-cells[, mtx_row := .I]                                   # row in count_matrix.mtx
-cells[, sub_n   := as.integer(sub(".*__s", "", bc_wells))]
-cells[, barcode := sub("__s.*", "", bc_wells)]
-stopifnot(!anyNA(cells$sub_n), !anyDuplicated(cells$bc_wells))
-
 sublibs <- read.delim(opt$sublibraries, comment.char = "#")$sublibrary
-step(nrow(cells), " cells, ", nrow(genes), " genes, ", length(sublibs), " sublibraries")
-
-dx <- fread(opt$donor_table)
-# The collaborator's raw table works too: barcode = "<bc_wells>__s<sublibrary>".
-if (!"donor_id" %in% names(dx) && "donor" %in% names(dx)) {
-  setnames(dx, "donor", "donor_id")
-  dx[, sublibrary := sub(".*__s", "", barcode)]
-  dx[, barcode    := sub("__s.*", "", barcode)]
-}
-stopifnot(all(c("barcode", "sublibrary", "donor_id") %in% names(dx)))
-stopifnot(!anyDuplicated(dx, by = c("barcode", "sublibrary")))
-# Keep the collaborator's QC / labels apart from the ones made here.
-collab <- intersect(c("cell_type", "cluster_label", "n_genes", "n_counts", "percent_mito"), names(dx))
-setnames(dx, collab, paste0("collab_", collab))
-
-# bc_wells ends in the sublibrary NUMBER (s1) while the donor table uses the
-# NAME (ParseFANS1). s<N> should be row N of sublibraries.tsv -- check it against
-# barcode overlap rather than assume it (barcodes repeat across sublibraries, so
-# the true pairing has to stand far above the chance matches).
-hits <- merge(cells[, .(barcode, sub_n)], dx[, .(barcode, sublibrary)],
-              by = "barcode", allow.cartesian = TRUE)[, .N, by = .(sub_n, sublibrary)]
-best <- hits[order(sub_n, -N)][, .(best = sublibrary[1], n_best = N[1], n_runner_up = N[2]), by = sub_n]
-best[, expected := sublibs[sub_n]]
-print(best)
-
-sub_map <- setNames(sublibs, seq_along(sublibs))
-if (!all(best$best == best$expected)) {
-  stopifnot(!anyDuplicated(best$best))
-  warning("s<N> does NOT follow sublibraries.tsv order -- using the barcode-overlap mapping")
-  sub_map[as.character(best$sub_n)] <- best$best
-}
-cells[, sublibrary := sub_map[as.character(sub_n)]]
-
-drop <- c("cell_id", grep("^sub_lib", names(dx), value = TRUE))
-cols <- setdiff(names(dx), drop)
-n_before <- nrow(cells)
-cells <- merge(cells, dx[, ..cols], by = c("barcode", "sublibrary"), all.x = TRUE, sort = FALSE)
-setorder(cells, mtx_row)
-stopifnot(nrow(cells) == n_before, identical(cells$mtx_row, seq_len(n_before)))
-
-cells[, assigned := !is.na(donor_id)]
-cells[is.na(donor_id), donor_id := "unassigned"]
-if (!any(cells$assigned)) stop("No donor-table barcodes matched -- check the barcode / sublibrary formats.")
-step(sprintf("%d of %d donor-table cells found; %d of %d split-pipe cells have a donor (%.1f%%)",
-             sum(cells$assigned), nrow(dx), sum(cells$assigned), nrow(cells), 100 * mean(cells$assigned)))
-rm(dx, hits); invisible(gc())
+meta <- readRDS(file.path(opt$prep_dir, "cell_meta.rds"))
+step("cell_meta.rds: ", nrow(meta), " cells")
 
 # =============================================================================
-# 2. Count matrix
+# 4. Doublet calls + final QC
 # =============================================================================
-only_assigned <- flag("only_assigned")
-n_cells <- as.integer(num("n_cells"))
-
-# n_cells > 0 is the smoke-test path: read a random subset only.
-use_rows <- NULL
-if (n_cells > 0) {
-  pool <- if (only_assigned) cells[assigned == TRUE, mtx_row] else cells$mtx_row
-  if (n_cells < length(pool)) {
-    set.seed(seed)
-    use_rows <- sort(sample(pool, n_cells))
-  }
-}
-
-# count_matrix.mtx is CELLS x GENES, rows in cell_metadata.csv order. Returns
-# genes x cells. 1.1e9 entries: read as three int columns (~13 GB), then --
-# since split-pipe writes it sorted by cell -- the column pointers are just
-# cumulative counts, and the dgCMatrix is built without sparseMatrix()'s
-# triplet sort (which would roughly double the peak).
-read_parse_mtx <- function(path, n_cells, n_genes, rows = NULL) {
-  hdr <- readLines(path, n = 50)
-  n_skip <- sum(startsWith(hdr, "%")) + 1L                 # comments + dims line
-  dims <- as.numeric(strsplit(trimws(hdr[n_skip]), "\\s+")[[1]])
-  if (dims[1] != n_cells || dims[2] != n_genes) {
-    stop(sprintf("matrix is %s x %s; expected cells x genes = %d x %d",
-                 dims[1], dims[2], n_cells, n_genes))
-  }
-  if (dims[3] > .Machine$integer.max) {
-    stop("more than 2^31-1 non-zeros: too many for one dgCMatrix; split the run")
-  }
-
-  if (is.null(rows)) {
-    trip <- fread(path, skip = n_skip, sep = " ", header = FALSE,
-                  col.names = c("cell", "gene", "x"), colClasses = "integer",
-                  showProgress = FALSE)
-    if (nrow(trip) != dims[3]) stop("read ", nrow(trip), " entries; header says ", dims[3])
-    rows <- seq_len(n_cells)
-  } else {
-    keep_file <- tempfile(fileext = ".txt")
-    fwrite(list(rows), keep_file, col.names = FALSE)
-    awk <- if (nzchar(Sys.which("mawk"))) "mawk" else "awk"
-    cmd <- sprintf("%s 'NR == FNR { k[$1]; next } FNR > %d && ($1 in k)' %s %s",
-                   awk, n_skip, shQuote(keep_file), shQuote(path))
-    trip <- fread(cmd = cmd, sep = " ", header = FALSE,
-                  col.names = c("cell", "gene", "x"), colClasses = "integer")
-    unlink(keep_file)
-    new_col <- integer(n_cells)
-    new_col[rows] <- seq_along(rows)
-    trip[, cell := new_col[cell]]
-  }
-  step("read ", nrow(trip), " matrix entries")
-
-  n_out <- length(rows)
-  if (!is.unsorted(trip$cell)) {
-    p <- c(0L, cumsum(tabulate(trip$cell, nbins = n_out)))
-    i <- trip$gene - 1L
-    x <- as.numeric(trip$x)
-    rm(trip); invisible(gc())
-    # new() validates, which includes gene order within each cell.
-    m <- tryCatch(new("dgCMatrix", i = i, p = p, x = x, Dim = c(n_genes, n_out)),
-                  error = function(e) NULL)
-    if (is.null(m)) {
-      step("gene order within cells is not sorted; falling back to sparseMatrix()")
-      m <- sparseMatrix(i = i + 1L, p = p, x = x, dims = c(n_genes, n_out), repr = "C")
-    }
-  } else {
-    step("matrix is not sorted by cell; using sparseMatrix()")
-    m <- sparseMatrix(i = trip$gene, j = trip$cell, x = as.numeric(trip$x),
-                      dims = c(n_genes, n_out), repr = "C")
-  }
-  m
-}
-
-counts <- read_parse_mtx(file.path(opt$dge_dir, "count_matrix.mtx"),
-                         n_cells = nrow(cells), n_genes = nrow(genes), rows = use_rows)
-meta <- if (is.null(use_rows)) cells else cells[use_rows]
-rm(cells); invisible(gc())
-rownames(counts) <- make.unique(genes$gene_name)           # 358 duplicated names
-colnames(counts) <- meta$bc_wells
-step("count matrix: ", nrow(counts), " genes x ", ncol(counts), " cells")
-
-# =============================================================================
-# 3. Per-cell QC
-# =============================================================================
-mt_genes   <- grepl("^MT-", rownames(counts))
-ribo_genes <- grepl("^RP[SL]", rownames(counts))
-if (!any(mt_genes)) warning("No ^MT- genes found: percent_mt will be 0 for every cell")
-
-meta[, n_transcripts := colSums(counts)]
-meta[, n_genes       := diff(counts@p)]
-meta[, pct_mt        := 100 * colSums(counts[mt_genes, , drop = FALSE])   / pmax(n_transcripts, 1)]
-meta[, pct_ribo      := 100 * colSums(counts[ribo_genes, , drop = FALSE]) / pmax(n_transcripts, 1)]
-
-# Guards against a row-order or orientation mistake: our totals must track
-# split-pipe's own per-cell counts.
-tscp_cor <- cor(meta$n_transcripts, meta$tscp_count)
-step("cor(our UMI totals, split-pipe tscp_count) = ", round(tscp_cor, 4))
-stopifnot(tscp_cor > 0.99)
-
-max_counts <- num("max_counts")
-meta[, `:=`(
-  fail_low_genes       = n_genes < num("min_genes"),
-  fail_high_genes      = n_genes > num("max_genes"),
-  fail_low_transcripts = n_transcripts < num("min_counts"),
-  fail_high_transcripts = max_counts > 0 & n_transcripts > max_counts,
-  fail_high_mt         = pct_mt > num("max_pct_mt")
-)]
-# scDblFinder wants low-quality cells gone but NOT high-count ones -- those are
-# exactly the doublet-like cells it learns from. So the upper bounds wait.
-meta[, pre_doublet_pass := !(fail_low_genes | fail_low_transcripts | fail_high_mt)]
-
-keep <- meta$pre_doublet_pass
-counts <- counts[, keep]
-invisible(gc())
-step(sum(keep), " of ", length(keep), " cells pass the low-quality filters")
-
-# =============================================================================
-# 4. Doublets (scDblFinder, split by sublibrary)
-# =============================================================================
-# Doublets in Parse are barcode collisions, which happen within a sublibrary
-# (the sublibrary index is added after round 3), so that is the `samples` unit.
-# scDblFinder's default rate (0.8% per 1000 cells, a 10x figure) would give
-# ~20% here; the configured rate is used instead.
-#
-# The split by sublibrary is done here rather than via scDblFinder(samples=),
-# so each Snow worker is sent one sublibrary's matrix and nothing else. Worker
-# functions are defined at top level: a function made inside another function
-# drags that function's whole environment (the full matrix) along when it is
-# sent to a worker.
-doublet_worker <- function(m, dbr, dbr_sd) {
-  sce <- SingleCellExperiment::SingleCellExperiment(assays = list(counts = m))
-  sce <- scDblFinder::scDblFinder(sce, dbr = dbr, dbr.sd = dbr_sd,
-                                  BPPARAM = BiocParallel::SerialParam(), verbose = TRUE)
-  data.frame(cell = colnames(sce),
-             doublet_score = sce$scDblFinder.score,
-             doublet_class = as.character(sce$scDblFinder.class))
-}
-
-by_sub <- split(seq_len(ncol(counts)), as.character(meta$sublibrary[keep]))
-n_dbl_workers <- min(threads, length(by_sub))
-step("scDblFinder: ", length(by_sub), " sublibraries, ", n_dbl_workers, " at a time")
-dbl <- BiocParallel::bplapply(
-  lapply(by_sub, function(k) counts[, k, drop = FALSE]),
-  doublet_worker,
-  dbr = num_or_null("doublet_dbr"), dbr_sd = num_or_null("doublet_dbr_sd"),
-  BPPARAM = snow_param(n_dbl_workers)
-)
-dbl <- rbindlist(dbl)
-rm(by_sub); invisible(gc())
-idx <- match(meta$bc_wells[keep], dbl$cell)
-stopifnot(!anyNA(idx))
-meta[keep, `:=`(doublet_score = dbl$doublet_score[idx], doublet_class = dbl$doublet_class[idx])]
+dbl <- rbindlist(lapply(sublibs, function(s) {
+  fread(doublet_file(opt$doublet_dir, s), colClasses = c(doublet_class = "character"))
+}))
+idx <- match(meta$bc_wells, dbl$bc_wells)
+stopifnot(identical(sort(which(!is.na(idx))), which(meta$pre_doublet_pass)))
+meta[, `:=`(doublet_score = dbl$doublet_score[idx], doublet_class = dbl$doublet_class[idx])]
 meta[, fail_doublet := flag("remove_doublets") & doublet_class %in% "doublet"]
-rm(dbl); invisible(gc())
+rm(dbl, idx); invisible(gc())
 step("doublets: ", sum(meta$doublet_class %in% "doublet"), " called (",
-     round(100 * mean(meta$doublet_class[keep] == "doublet"), 2), "% of tested cells)")
+     round(100 * mean(meta$doublet_class[meta$pre_doublet_pass] %in% "doublet"), 2), "% of tested cells)")
 
-# --- final QC call + what goes into clustering --------------------------------
 fail_cols <- grep("^fail_", names(meta), value = TRUE)
 meta[, qc_pass := !Reduce(`|`, .SD), .SDcols = fail_cols]
 meta[, clustered := qc_pass & (assigned | !only_assigned)]
@@ -333,6 +76,7 @@ rm(reason)
 
 qc_summary <- meta[, c(list(n_cells = .N), lapply(.SD, sum),
                        list(qc_pass = sum(qc_pass), clustered = sum(clustered),
+                            doublet_rate = mean(doublet_class[pre_doublet_pass] %in% "doublet"),
                             median_transcripts = as.numeric(median(n_transcripts)),
                             median_genes = as.numeric(median(n_genes)),
                             median_pct_mt = median(pct_mt))),
@@ -344,15 +88,35 @@ qc_summary <- rbind(qc_summary,
 fwrite(qc_summary, out("qc_summary.tsv"), sep = "\t")
 print(qc_summary)
 
-# counts currently holds the pre_doublet_pass cells.
-counts <- counts[, meta$clustered[keep]]
-invisible(gc())
+# --- counts of the clustered cells -------------------------------------------
+# Stitch the per-sublibrary matrices together by hand: Matrix's cbind() on
+# many pieces works pairwise and copies the growing result each time.
+cbind_csc <- function(ms) {
+  stopifnot(all(vapply(ms, function(m) identical(rownames(m), rownames(ms[[1]])), logical(1))))
+  nnz <- vapply(ms, function(m) length(m@x), numeric(1))
+  if (sum(nnz) > .Machine$integer.max) stop("more than 2^31-1 non-zeros in the clustered cells")
+  p <- c(0L, unlist(lapply(seq_along(ms), function(j) {
+    ms[[j]]@p[-1] + as.integer(sum(nnz[seq_len(j - 1)]))
+  })))
+  new("dgCMatrix",
+      i = unlist(lapply(ms, slot, "i")), p = p, x = unlist(lapply(ms, slot, "x")),
+      Dim = c(nrow(ms[[1]]), sum(vapply(ms, ncol, numeric(1)))),
+      Dimnames = list(rownames(ms[[1]]), unlist(lapply(ms, colnames))))
+}
+
+clustered_cells <- meta$bc_wells[meta$clustered]
+pieces <- lapply(sublibs, function(s) {
+  m <- readRDS(counts_file(opt$prep_dir, s))
+  m[, colnames(m) %in% clustered_cells, drop = FALSE]
+})
+counts <- cbind_csc(pieces)
+rm(pieces); invisible(gc())
 step(ncol(counts), " cells go into clustering")
 
 # =============================================================================
 # 5. Seurat -> Harmony -> clusters
 # =============================================================================
-md <- as.data.frame(meta[clustered == TRUE])
+md <- as.data.frame(meta[match(colnames(counts), bc_wells)])
 rownames(md) <- md$bc_wells
 md$sublibrary <- factor(md$sublibrary, levels = sublibs)
 obj <- CreateSeuratObject(counts, meta.data = md, project = "parse_celltype",
@@ -362,13 +126,13 @@ step("Seurat object: ", nrow(obj), " genes x ", ncol(obj), " cells")
 
 obj <- NormalizeData(obj, verbose = FALSE)
 obj <- FindVariableFeatures(obj, selection.method = "vst", nfeatures = as.integer(num("n_hvg")), verbose = FALSE)
-obj <- ScaleData(obj, verbose = FALSE)            # sequential: see with_workers()
+obj <- ScaleData(obj, verbose = FALSE)            # sequential: see with_workers() in celltype_common.R
 set_blas(threads)
 obj <- RunPCA(obj, npcs = max(50, n_pcs), seed.use = seed, verbose = FALSE)
 set_blas(1)
 step("PCA done")
 
-obj <- with_workers(RunUMAP(obj, reduction = "pca", dims = 1:n_pcs, seed.use = seed,
+obj <- with_workers(threads, RunUMAP(obj, reduction = "pca", dims = 1:n_pcs, seed.use = seed,
                             reduction.name = "umap_uncorrected", reduction.key = "uUMAP_", verbose = FALSE))
 step("uncorrected UMAP done")
 
@@ -378,7 +142,7 @@ obj <- RunHarmony(obj, group.by.vars = harmony_vars, reduction.use = "pca",
                   ncores = threads, verbose = FALSE)
 step("Harmony done (", paste(harmony_vars, collapse = " + "), ")")
 
-obj <- with_workers(RunUMAP(obj, reduction = "harmony", dims = 1:n_pcs, seed.use = seed,
+obj <- with_workers(threads, RunUMAP(obj, reduction = "harmony", dims = 1:n_pcs, seed.use = seed,
                             reduction.name = "umap_harmony", reduction.key = "hUMAP_", verbose = FALSE))
 obj <- FindNeighbors(obj, reduction = "harmony", dims = 1:n_pcs, verbose = FALSE)
 obj <- FindClusters(obj, resolution = resolutions, random.seed = seed, verbose = FALSE)
@@ -405,11 +169,21 @@ r2 <- rbind(embedding_r2(obj, "pca", r2_vars, 1:n_pcs),
 # Mapping all cells at once would build a dense reference-feature residual
 # matrix for every cell; per sublibrary it stays at ~26k cells a go, and the
 # chunks run `azimuth_workers` at a time, each in a fresh R process (see
-# "threading" at the top). A worker that dies (e.g. out of memory) makes
-# bplapply stop with an error naming the lost worker.
-azimuth_worker <- function(m, reference) {
+# "threading" in celltype_common.R). Each worker reads its own sublibrary's
+# counts file, so nothing large is sent to it. A worker that dies (e.g. out of
+# memory) makes bplapply stop with an error naming the lost worker.
+# Self-contained: a Snow worker is a separate R session that sees none of this
+# script's functions, so the thread pinning from pin_threads() is repeated.
+azimuth_worker <- function(file, cells, reference) {
+  Sys.setenv(OMP_NUM_THREADS = "1", OPENBLAS_NUM_THREADS = "1")
+  if (requireNamespace("RhpcBLASctl", quietly = TRUE)) {
+    RhpcBLASctl::blas_set_num_threads(1)
+    RhpcBLASctl::omp_set_num_threads(1)
+  }
   suppressPackageStartupMessages(library(Seurat))
-  q <- CreateSeuratObject(m, min.cells = 0, min.features = 0)
+  m <- readRDS(file)
+  q <- CreateSeuratObject(m[, cells, drop = FALSE], min.cells = 0, min.features = 0)
+  rm(m)
   q <- suppressWarnings(Azimuth::RunAzimuth(q, reference = reference, verbose = FALSE))
   qm <- q@meta.data
   keep_cols <- grep("^predicted\\.|^mapping\\.score$", colnames(qm), value = TRUE)
@@ -418,18 +192,20 @@ azimuth_worker <- function(m, reference) {
 
 pred_cols <- character(0)
 if (flag("run_azimuth")) {
-  cnt <- LayerData(obj, assay = "RNA", layer = "counts")
-  chunks <- split(seq_len(ncol(cnt)), droplevels(obj$sublibrary))
-  workers <- min(as.integer(num("azimuth_workers")), threads, length(chunks))
-  step("Azimuth: ", length(chunks), " chunks, ", workers, " at a time, reference ", opt$azimuth_reference)
-  az <- BiocParallel::bplapply(
-    lapply(chunks, function(k) cnt[, k, drop = FALSE]),
+  cells_by_sub <- split(colnames(obj), as.character(obj$sublibrary))
+  cells_by_sub <- cells_by_sub[intersect(sublibs, names(cells_by_sub))]
+  workers <- min(as.integer(num("azimuth_workers")), threads, length(cells_by_sub))
+  step("Azimuth: ", length(cells_by_sub), " sublibraries, ", workers, " at a time, reference ", opt$azimuth_reference)
+  az <- BiocParallel::bpmapply(
     azimuth_worker,
-    reference = opt$azimuth_reference,
-    BPPARAM = snow_param(workers)
+    file = vapply(names(cells_by_sub), function(s) counts_file(opt$prep_dir, s), ""),
+    cells = cells_by_sub,
+    MoreArgs = list(reference = opt$azimuth_reference),
+    SIMPLIFY = FALSE,
+    BPPARAM = snow_param(workers, seed)
   )
   az <- rbindlist(az, use.names = TRUE, fill = TRUE)
-  rm(cnt, chunks); invisible(gc())
+  rm(cells_by_sub); invisible(gc())
 
   pred_cols <- setdiff(names(az), "bc_wells")
   idx <- match(colnames(obj), az$bc_wells)
@@ -616,6 +392,5 @@ obj@graphs <- list()
 saveRDS(obj, out("seurat_harmony.rds"), compress = FALSE)
 step("wrote seurat_harmony.rds")
 
-peak <- sum(gc(verbose = FALSE)[, 6]) / 1024
-step(sprintf("done. Peak R heap %.1f GB (the job's RSS will be higher: forks + fread buffers)", peak))
+log_peak()
 print(sessionInfo())

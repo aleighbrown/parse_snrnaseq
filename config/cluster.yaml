@@ -143,21 +143,48 @@ import_assignments:
     submission_string: " "
 
 # --- Stage 4: cell type annotation --------------------------------------------
-# ONE large reservation rather than several mid-sized jobs: clustering is a
-# single in-memory computation over all 426k cells, and one big -R y request
-# starts sooner than a chain of jobs that each queue in turn. 4 x 24G = 96G;
-# expected peak is ~60-90G plus Azimuth workers (sizing in
-# workflow/rules/celltype.smk). Trim once the log's peak figure is known.
-celltype_annotation:
-    h_vmem: 24G
-    tmem:   24G
-    h_rt:   "24:00:00"
-    submission_string: "-pe smp 4 -R y"
+# Three stages (workflow/rules/celltype.smk). The slow, light, independent
+# part (doublets) runs as 16 narrow jobs that start quickly; the one large
+# reservation (cluster) is held for a few hours. Figures below are estimates
+# scaled up from the 20k-cell test (36 min, 5.1 GB R heap, 60% of it in
+# scDblFinder) -- each stage logs its heap per step and its peak; trim from
+# those after the first full run. Slots must equal threads: in config.yaml.
 
-# 20k-cell smoke test. 2 x 16G = 32G. Should finish well inside an hour (the
-# subset read alone is ~7 min); 3 h keeps a hang from burning half a day.
-celltype_annotation_test:
+# mtx -> QC -> per-sublibrary counts. ~30 GB heap peak, plus fread's map of the
+# 16 GB file, which counts against h_vmem. 4 x 16G = 64G.
+celltype_prep:
     h_vmem: 16G
     tmem:   16G
-    h_rt:   "3:00:00"
+    h_rt:   "4:00:00"
+    submission_string: "-pe smp 4 -R y"
+
+# 20k cells; the awk subset read is most of it. 2 x 8G = 16G.
+celltype_prep_test:
+    h_vmem: 8G
+    tmem:   8G
+    h_rt:   "1:00:00"
+    submission_string: "-pe smp 2 -R y"
+
+# scDblFinder on one sublibrary (~26k cells). Shared by the full run and the
+# test. Guess: 1-3 h at 2 threads; a few GB. 2 x 8G = 16G.
+celltype_doublets:
+    h_vmem: 8G
+    tmem:   8G
+    h_rt:   "8:00:00"
+    submission_string: "-pe smp 2 -R y"
+
+# Seurat / Harmony / Azimuth over all clustered cells. ~90-100 GB heap plus
+# ~10 GB per Azimuth worker (celltype.azimuth.workers: 2). Guess: 3-5 h.
+# 4 x 32G = 128G.
+celltype_cluster:
+    h_vmem: 32G
+    tmem:   32G
+    h_rt:   "12:00:00"
+    submission_string: "-pe smp 4 -R y"
+
+# ~17k cells: ~10 min in the test. 2 x 8G = 16G.
+celltype_cluster_test:
+    h_vmem: 8G
+    tmem:   8G
+    h_rt:   "1:00:00"
     submission_string: "-pe smp 2 -R y"

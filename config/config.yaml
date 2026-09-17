@@ -192,7 +192,9 @@ vireo:
 
 # --- Stage 4: cell type annotation (targets: celltype, celltype_test) ---------
 # Input is splitpipe/combined/<cell_meta dir>/count_matrix.mtx plus the demux
-# table; output goes to <results_dir>/celltype/. See workflow/rules/celltype.smk.
+# table; output goes to <results_dir>/celltype/ (celltype_test/ for the smoke
+# test). Three stages: prep -> doublets (one job per sublibrary) -> cluster.
+# See workflow/rules/celltype.smk.
 celltype:
   # R runs inside this image via `singularity exec` (conda-forge's current R
   # builds need glibc >= 2.28, newer than the cluster's).
@@ -253,8 +255,11 @@ celltype:
     # A SeuratData name (installed in the env) or a directory holding an
     # Azimuth reference (ref.Rds + idx.annoy).
     reference: humancortexref
-    # Sublibraries mapped at once. Each worker holds one ~26k-cell query.
-    workers: 4
+    # Sublibraries mapped at once (capped at the job's slots). Each worker is a
+    # separate R process holding one ~26k-cell query plus the reference,
+    # ~10 GB, on top of the main process's ~90-100 GB -- 2 fits the 128 GB
+    # celltype_cluster reservation.
+    workers: 2
 
 # --- Contig naming ------------------------------------------------------------
 # Only relevant to the vireo branch: applied when building the genotype panel,
@@ -283,6 +288,10 @@ threads:
   prepare_reference_vcf: 4
   cellsnp: 8
   vireo: 4
-  # One big shared-memory job; 4 x 24G in cluster.yaml.
-  celltype_annotation: 4
-  celltype_annotation_test: 2
+  # Cell typing (workflow/rules/celltype.smk). Each must equal its -pe smp in
+  # cluster.yaml. Doublet jobs are shared by the full run and the test.
+  celltype_prep: 4
+  celltype_prep_test: 2
+  celltype_doublets: 2
+  celltype_cluster: 4
+  celltype_cluster_test: 2
