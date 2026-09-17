@@ -194,8 +194,8 @@ rule. **`tmem` and `h_vmem` are per slot** on this cluster, so `-pe smp 4` with
 | `cellsnp` | 8 | 4G | 32G | 24:00:00 |
 | `vireo` | 4 | 8G | 32G | 12:00:00 |
 | `import_assignments` | 1 | 16G | 16G | 2:00:00 |
-| `celltype_annotation` | 8 | 24G | 192G | 48:00:00 |
-| `celltype_annotation_test` | 4 | 8G | 32G | 12:00:00 |
+| `celltype_annotation` | 4 | 24G | 96G | 24:00:00 |
+| `celltype_annotation_test` | 2 | 16G | 32G | 3:00:00 |
 
 ### Why split-pipe is three rules
 
@@ -372,7 +372,7 @@ subsample.
 
 ```bash
 source submit.sh celltype_test   # 20k random cells, 32 GB job, output in celltype_test/
-source submit.sh celltype        # all 426k cells, one 192 GB job
+source submit.sh celltype        # all 426k cells, one 96 GB job
 ```
 
 Everything is done by `workflow/scripts/celltype_annotation.R`, in one job:
@@ -405,8 +405,8 @@ Everything is done by `workflow/scripts/celltype_annotation.R`, in one job:
 so it cannot be split across jobs. On this cluster a single large `-R y`
 reservation also starts sooner than a chain of mid-sized jobs that each wait in
 the queue. The memory estimate is in `workflow/rules/celltype.smk`. The log
-prints R's heap at every step and the peak at the end, so the 192 GB request
-can be trimmed after the first full run.
+prints R's heap at every step and the peak at the end, so the 96 GB request
+can be adjusted after the first full run.
 
 **R environment: a Singularity image, not conda.** conda-forge's current R
 builds need glibc 2.28 or newer, which is newer than this cluster has, so

@@ -59,14 +59,30 @@ out <- function(f) file.path(opt$out_dir, f)
 dir.create(opt$out_dir, recursive = TRUE, showWarnings = FALSE)
 
 # --- threading ---------------------------------------------------------------
-# BLAS stays single-threaded except around PCA: OpenBLAS thread pools and
-# fork() (scDblFinder, future::multicore, mclapply) are a known deadlock mix.
+# NO fork() anywhere in this script. fread() has already run OpenMP threads in
+# this process by the time anything parallel starts, and GNU OpenMP is not
+# fork-safe: a forked child that touches OpenMP (xgboost inside scDblFinder
+# did) can wait forever on a lock no thread will release. The first test run
+# sat at 0 progress in scDblFinder's MulticoreParam until h_rt killed it. So
+# parallel work uses fresh R processes (BiocParallel::SnowParam), each sent
+# only its own sublibrary's counts.
+# BLAS stays single-threaded except around PCA.
 setDTthreads(threads)
 set_blas <- function(n) if (requireNamespace("RhpcBLASctl", quietly = TRUE)) RhpcBLASctl::blas_set_num_threads(n)
 set_blas(1)
 options(future.globals.maxSize = Inf)
 
-# Seurat's RunUMAP / ScaleData take their thread count from the future plan.
+snow_param <- function(n) {
+  if (n > 1) {
+    BiocParallel::SnowParam(workers = n, type = "SOCK", RNGseed = seed, log = TRUE)
+  } else {
+    BiocParallel::SerialParam(RNGseed = seed, log = TRUE)
+  }
+}
+
+# RunUMAP reads its thread count (uwot threads, not forks) from the future plan.
+# Only wrap calls that do NOT dispatch futures: under a multicore plan those
+# would fork. ScaleData does dispatch futures, so it runs unwrapped.
 with_workers <- function(expr) {
   if (threads > 1 && future::supportsMulticore()) {
     old <- future::plan(future::multicore, workers = threads)
@@ -270,25 +286,35 @@ step(sum(keep), " of ", length(keep), " cells pass the low-quality filters")
 # (the sublibrary index is added after round 3), so that is the `samples` unit.
 # scDblFinder's default rate (0.8% per 1000 cells, a 10x figure) would give
 # ~20% here; the configured rate is used instead.
-run_doublets <- function(counts, samples) {
-  sce <- SingleCellExperiment::SingleCellExperiment(assays = list(counts = counts))
-  n_workers <- min(threads, length(unique(samples)))
-  bp <- if (n_workers > 1) {
-    BiocParallel::MulticoreParam(workers = n_workers, RNGseed = seed)
-  } else {
-    BiocParallel::SerialParam(RNGseed = seed)
-  }
-  sce <- scDblFinder::scDblFinder(sce, samples = samples,
-                                  dbr = num_or_null("doublet_dbr"),
-                                  dbr.sd = num_or_null("doublet_dbr_sd"),
-                                  BPPARAM = bp, verbose = FALSE)
-  data.table(doublet_score = sce$scDblFinder.score,
+#
+# The split by sublibrary is done here rather than via scDblFinder(samples=),
+# so each Snow worker is sent one sublibrary's matrix and nothing else. Worker
+# functions are defined at top level: a function made inside another function
+# drags that function's whole environment (the full matrix) along when it is
+# sent to a worker.
+doublet_worker <- function(m, dbr, dbr_sd) {
+  sce <- SingleCellExperiment::SingleCellExperiment(assays = list(counts = m))
+  sce <- scDblFinder::scDblFinder(sce, dbr = dbr, dbr.sd = dbr_sd,
+                                  BPPARAM = BiocParallel::SerialParam(), verbose = TRUE)
+  data.frame(cell = colnames(sce),
+             doublet_score = sce$scDblFinder.score,
              doublet_class = as.character(sce$scDblFinder.class))
 }
 
-set.seed(seed)
-dbl <- run_doublets(counts, samples = as.character(meta$sublibrary[keep]))
-meta[keep, `:=`(doublet_score = dbl$doublet_score, doublet_class = dbl$doublet_class)]
+by_sub <- split(seq_len(ncol(counts)), as.character(meta$sublibrary[keep]))
+n_dbl_workers <- min(threads, length(by_sub))
+step("scDblFinder: ", length(by_sub), " sublibraries, ", n_dbl_workers, " at a time")
+dbl <- BiocParallel::bplapply(
+  lapply(by_sub, function(k) counts[, k, drop = FALSE]),
+  doublet_worker,
+  dbr = num_or_null("doublet_dbr"), dbr_sd = num_or_null("doublet_dbr_sd"),
+  BPPARAM = snow_param(n_dbl_workers)
+)
+dbl <- rbindlist(dbl)
+rm(by_sub); invisible(gc())
+idx <- match(meta$bc_wells[keep], dbl$cell)
+stopifnot(!anyNA(idx))
+meta[keep, `:=`(doublet_score = dbl$doublet_score[idx], doublet_class = dbl$doublet_class[idx])]
 meta[, fail_doublet := flag("remove_doublets") & doublet_class %in% "doublet"]
 rm(dbl); invisible(gc())
 step("doublets: ", sum(meta$doublet_class %in% "doublet"), " called (",
@@ -336,7 +362,7 @@ step("Seurat object: ", nrow(obj), " genes x ", ncol(obj), " cells")
 
 obj <- NormalizeData(obj, verbose = FALSE)
 obj <- FindVariableFeatures(obj, selection.method = "vst", nfeatures = as.integer(num("n_hvg")), verbose = FALSE)
-obj <- with_workers(ScaleData(obj, verbose = FALSE))
+obj <- ScaleData(obj, verbose = FALSE)            # sequential: see with_workers()
 set_blas(threads)
 obj <- RunPCA(obj, npcs = max(50, n_pcs), seed.use = seed, verbose = FALSE)
 set_blas(1)
@@ -378,33 +404,32 @@ r2 <- rbind(embedding_r2(obj, "pca", r2_vars, 1:n_pcs),
 # =============================================================================
 # Mapping all cells at once would build a dense reference-feature residual
 # matrix for every cell; per sublibrary it stays at ~26k cells a go, and the
-# chunks run `azimuth_workers` at a time.
+# chunks run `azimuth_workers` at a time, each in a fresh R process (see
+# "threading" at the top). A worker that dies (e.g. out of memory) makes
+# bplapply stop with an error naming the lost worker.
+azimuth_worker <- function(m, reference) {
+  suppressPackageStartupMessages(library(Seurat))
+  q <- CreateSeuratObject(m, min.cells = 0, min.features = 0)
+  q <- suppressWarnings(Azimuth::RunAzimuth(q, reference = reference, verbose = FALSE))
+  qm <- q@meta.data
+  keep_cols <- grep("^predicted\\.|^mapping\\.score$", colnames(qm), value = TRUE)
+  data.frame(bc_wells = rownames(qm), qm[, keep_cols, drop = FALSE], check.names = FALSE)
+}
+
 pred_cols <- character(0)
 if (flag("run_azimuth")) {
   cnt <- LayerData(obj, assay = "RNA", layer = "counts")
   chunks <- split(seq_len(ncol(cnt)), droplevels(obj$sublibrary))
-  map_chunk <- function(k) {
-    q <- CreateSeuratObject(cnt[, k, drop = FALSE], min.cells = 0, min.features = 0)
-    q <- suppressWarnings(Azimuth::RunAzimuth(q, reference = opt$azimuth_reference, verbose = FALSE))
-    qm <- q@meta.data
-    keep_cols <- grep("^predicted\\.|^mapping\\.score$", colnames(qm), value = TRUE)
-    data.table(bc_wells = rownames(qm), qm[, keep_cols, drop = FALSE])
-  }
-  workers <- min(as.integer(num("azimuth_workers")), length(chunks))
+  workers <- min(as.integer(num("azimuth_workers")), threads, length(chunks))
   step("Azimuth: ", length(chunks), " chunks, ", workers, " at a time, reference ", opt$azimuth_reference)
-  az <- if (workers > 1) {
-    parallel::mclapply(chunks, map_chunk, mc.cores = workers, mc.preschedule = FALSE)
-  } else {
-    lapply(chunks, map_chunk)
-  }
-  # A worker killed by the OOM killer comes back as NULL, not as an error.
-  failed <- vapply(az, function(r) is.null(r) || inherits(r, "try-error"), logical(1))
-  if (any(failed)) {
-    stop("Azimuth failed for: ", paste(names(az)[failed], collapse = ", "), "\n",
-         paste(unique(vapply(az[failed], function(r) if (is.null(r)) "worker died (out of memory?)" else as.character(r), "")), collapse = "\n"))
-  }
+  az <- BiocParallel::bplapply(
+    lapply(chunks, function(k) cnt[, k, drop = FALSE]),
+    azimuth_worker,
+    reference = opt$azimuth_reference,
+    BPPARAM = snow_param(workers)
+  )
   az <- rbindlist(az, use.names = TRUE, fill = TRUE)
-  rm(cnt); invisible(gc())
+  rm(cnt, chunks); invisible(gc())
 
   pred_cols <- setdiff(names(az), "bc_wells")
   idx <- match(colnames(obj), az$bc_wells)

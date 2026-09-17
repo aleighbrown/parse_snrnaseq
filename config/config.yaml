@@ -283,6 +283,6 @@ threads:
   prepare_reference_vcf: 4
   cellsnp: 8
   vireo: 4
-  # One big shared-memory job; 8 x 24G in cluster.yaml.
-  celltype_annotation: 8
-  celltype_annotation_test: 4
+  # One big shared-memory job; 4 x 24G in cluster.yaml.
+  celltype_annotation: 4
+  celltype_annotation_test: 2

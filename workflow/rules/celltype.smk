@@ -23,7 +23,7 @@
 #   SNN graph, Harmony, UMAP           ~10 GB
 #   Azimuth, per sublibrary x workers  ~8-10 GB each
 # -> ~60-90 GB steady, spikes above that at subsetting. cluster.yaml reserves
-# 8 x 24G = 192G. The log prints R's heap at every step and the peak at the
+# 4 x 24G = 96G. The log prints R's heap at every step and the peak at the
 # end -- trim the reservation once a full run has reported back.
 #
 # Not part of `rule all`: that target is split-pipe + demux only.
@@ -143,8 +143,8 @@ rule celltype_annotation:
         args=ct_args(RESULTS + "/celltype", 0, nthreads("celltype_annotation")),
     threads: nthreads("celltype_annotation")
     resources:
-        mem_mb=192000,
-        runtime=2880,
+        mem_mb=96000,
+        runtime=1440,
     log:
         "logs/celltype/celltype_annotation.log",
     shell:
@@ -171,7 +171,7 @@ use rule celltype_annotation as celltype_annotation_test with:
     threads: nthreads("celltype_annotation_test")
     resources:
         mem_mb=32000,
-        runtime=720,
+        runtime=180,
     log:
         "logs/celltype/celltype_annotation_test.log",
 
