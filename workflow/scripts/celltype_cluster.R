@@ -100,7 +100,7 @@ cbind_csc <- function(ms) {
   })))
   new("dgCMatrix",
       i = unlist(lapply(ms, slot, "i")), p = p, x = unlist(lapply(ms, slot, "x")),
-      Dim = c(nrow(ms[[1]]), sum(vapply(ms, ncol, numeric(1)))),
+      Dim = c(nrow(ms[[1]]), sum(vapply(ms, ncol, integer(1)))),
       Dimnames = list(rownames(ms[[1]]), unlist(lapply(ms, colnames))))
 }
 
