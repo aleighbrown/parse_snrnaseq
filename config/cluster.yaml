@@ -8,8 +8,14 @@
 # split-pipe will either be throttled or the job will be killed for overrunning
 # its memory reservation.
 #
-# tscratch is requested in cluster_qsub.sh (50G), which covers split-pipe's
-# temporary files.
+# tscratch (local scratch) is PER SLOT too, and is set here per rule -- it used
+# to be a flat 50G in cluster_qsub.sh, which on a 4-slot job asked for 200G,
+# more than any node has (`qhost -F tscratch`: max ~190G, most 160G), so those
+# jobs queued behind the one node that could ever run them. split-pipe needs
+# the big scratch; nothing else does.
+#
+# CEILING: the largest tmem on any node is 125G (`qhost -F tmem`), so
+# slots x tmem must stay under that or the job can never be scheduled.
 #
 # h_rt values are QUOTED on purpose: YAML 1.1 reads a bare 72:00:00 as
 # sexagesimal and hands qsub 259200. SGE accepts that as seconds so it happens
@@ -19,6 +25,7 @@ __default__:
     h_vmem: 4G
     tmem:   4G
     h_rt:   "4:00:00"
+    tscratch: 1G
     submission_string: " "
 
 # --- Stage 0: reference -------------------------------------------------------
@@ -35,6 +42,7 @@ mkref:
     tmem:   16G
     h_rt:   "24:00:00"
     submission_string: "-pe smp 4 -R y"
+    tscratch: 50G
 
 # --- Stage 1: split-pipe ------------------------------------------------------
 # Used when splitpipe.split_steps is TRUE: each sublibrary becomes three jobs.
@@ -54,6 +62,7 @@ split_pipe_pre:
     tmem:   8G
     h_rt:   "24:00:00"
     submission_string: "-pe smp 4 -R y"
+    tscratch: 50G
 
 # align. STAR, and the only step that saturates its cores (3.87 of 4). 9.71 h
 # at 4 threads, so expect ~5 h at 8. 8 slots rather than 16 on purpose: with 16,
@@ -66,6 +75,7 @@ split_pipe_align:
     tmem:   6G
     h_rt:   "48:00:00"
     submission_string: "-pe smp 8 -R y"
+    tscratch: 50G
 
 # post -> clean (PostProcess, Molinfo, DGE, SubSample, Analysis, Report, Clean).
 # I/O-bound at 1.2-1.9 cores, so it stays at 4 slots. Memory stays at 16G/slot
@@ -76,6 +86,7 @@ split_pipe_post:
     tmem:   16G
     h_rt:   "72:00:00"
     submission_string: "-pe smp 4 -R y"
+    tscratch: 50G
 
 # Used only when splitpipe.split_steps is FALSE (one --mode all job per
 # sublibrary). Raised from 72h: ParseFANS1 was still mid-run at 19.8 h having
@@ -86,6 +97,7 @@ split_pipe:
     tmem:   16G
     h_rt:   "120:00:00"
     submission_string: "-pe smp 4 -R y"
+    tscratch: 50G
 
 # Merges all 16 sublibraries into one DGE matrix -- memory-bound, not CPU-bound.
 # 8 x 8G = 64G.
@@ -94,6 +106,7 @@ split_pipe_comb:
     tmem:   64G
     h_rt:   "15:00:00"
     submission_string: " "
+    tscratch: 50G
 
 barcodes_from_meta:
     h_vmem: 4G
@@ -151,18 +164,21 @@ import_assignments:
 # those after the first full run. Slots must equal threads: in config.yaml.
 
 # mtx -> QC -> per-sublibrary counts. ~30 GB heap peak, plus fread's map of the
-# 16 GB file, which counts against h_vmem. 4 x 16G = 64G.
+# 16 GB file, which counts against h_vmem. 2 x 32G = 64G: this stage mostly
+# reads one file, so 2 slots place more easily than 4 and lose little.
 celltype_prep:
-    h_vmem: 16G
-    tmem:   16G
+    h_vmem: 32G
+    tmem:   32G
     h_rt:   "4:00:00"
-    submission_string: "-pe smp 4 -R y"
+    tscratch: 5G
+    submission_string: "-pe smp 2 -R y"
 
 # 20k cells; the awk subset read is most of it. 2 x 8G = 16G.
 celltype_prep_test:
     h_vmem: 8G
     tmem:   8G
     h_rt:   "1:00:00"
+    tscratch: 5G
     submission_string: "-pe smp 2 -R y"
 
 # scDblFinder on one sublibrary (~26k cells). Shared by the full run and the
@@ -171,15 +187,19 @@ celltype_doublets:
     h_vmem: 8G
     tmem:   8G
     h_rt:   "8:00:00"
+    tscratch: 5G
     submission_string: "-pe smp 2 -R y"
 
-# Seurat / Harmony / Azimuth over all clustered cells. ~90-100 GB heap plus
-# ~10 GB per Azimuth worker (celltype.azimuth.workers: 2). Guess: 3-5 h.
-# 4 x 32G = 128G.
+# Seurat / Harmony / Azimuth over all clustered cells. Guess: 50-80 GB in the
+# main process plus ~10 GB per Azimuth worker (celltype.azimuth.workers: 2),
+# 3-5 h. 4 x 30G = 120G, the most that fits under the 125G host ceiling -- if
+# the log's peak comes out near that, drop azimuth.workers to 1 rather than
+# asking for more.
 celltype_cluster:
-    h_vmem: 32G
-    tmem:   32G
+    h_vmem: 30G
+    tmem:   30G
     h_rt:   "12:00:00"
+    tscratch: 5G
     submission_string: "-pe smp 4 -R y"
 
 # ~17k cells: ~10 min in the test. 2 x 8G = 16G.
@@ -187,4 +207,5 @@ celltype_cluster_test:
     h_vmem: 8G
     tmem:   8G
     h_rt:   "1:00:00"
+    tscratch: 5G
     submission_string: "-pe smp 2 -R y"

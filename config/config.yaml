@@ -290,7 +290,7 @@ threads:
   vireo: 4
   # Cell typing (workflow/rules/celltype.smk). Each must equal its -pe smp in
   # cluster.yaml. Doublet jobs are shared by the full run and the test.
-  celltype_prep: 4
+  celltype_prep: 2
   celltype_prep_test: 2
   celltype_doublets: 2
   celltype_cluster: 4
