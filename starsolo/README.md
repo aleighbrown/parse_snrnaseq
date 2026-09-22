@@ -90,14 +90,23 @@ split-pipe called, all sublibraries, barcodes like `01_01_67__s1`. This is the
 same file as `../data/DGE_filtered/cell_metadata.csv`. Rows are kept per
 sublibrary by `cells_tag` (`s1` → ParseFANS1).
 
-This is deliberately the **broad** list rather than the QC-passed or
-donor-assigned one:
+`cells.subset` narrows that list to the cells you actually want aligned: the
+QC-passed, cell-typed, non-control table from R (`bc_wells`, with the `__s1`
+suffix). Everything else still comes from split-pipe's `cell_metadata.csv`,
+including `mread_count`, which the extraction is validated against. The job
+stops if a cell in your table is not in split-pipe's list, since that would
+mean the two came from different runs.
 
-- **Alignment never depends on QC or demux decisions.** Those are applied when
-  BAMs are split, so a changed donor call never means realigning.
-- **Validation needs it.** `mread_count` is what the extraction is checked
-  against.
-- **The cost is small.** The extra cells are a minority of reads.
+- **Fewer reads to align**, in proportion to the cells you drop.
+- **But the cell list is now baked into the alignment.** Changing it means
+  re-extracting and re-aligning, so settle QC and cell typing first. Set
+  `subset.file: null` to align every called cell instead.
+- **`called_cell_rate` in `read_layout.json` drops with it.** With ~180k of
+  426k cells, expect roughly half the ~0.4 the layout step reports for the
+  full list.
+
+Use the same file for `split.annotation`, so every aligned cell is also
+grouped.
 
 ### 3. The STAR reference
 
@@ -123,7 +132,8 @@ source submit.sh reference        # STAR index (can go first; needs no barcode t
 source submit.sh layout           # whitelist + read layout: minutes
 source submit.sh extract          # + extraction + validation vs split-pipe
 source submit.sh                  # everything through the STARsolo BAM
-source submit.sh split            # donor × sort BAMs
+source submit.sh split            # per-sublibrary donor × sort BAMs
+source submit.sh splicing         # merged donor × sort BAMs + junction matrix
 ```
 
 Going step by step is the point of the pilot. **Read each output before
@@ -136,6 +146,8 @@ starting the next step.**
 | `extract` | `extract/ParseFANS1/extract_stats.json` | `pairs_per_second`, which sizes the other 15 |
 | strand | `strand/ParseFANS1/strand_test.tsv` | one strand clearly wins |
 | `all` | `solo/ParseFANS1/Log.final.out`, `Solo.out/GeneFull/Summary.csv` | unique mapping rate; `Reads With Valid Barcodes` ≈ 1.0 |
+| `splicing` | `split/cells_per_group.tsv` | cells per donor × sort, and which groups fell below `split.min_cells` |
+| `splicing` | `junctions/sj_counts.report.tsv` | cells grouped per sublibrary (should be all of them), junctions found |
 
 Timings for every job are in `submissions/<run>/` logs.
 
@@ -152,14 +164,25 @@ pass1/{sublib}/SJ.out.tab
 pass1/pooled_junctions.sjdb.tsv, pooled_junctions.report.txt
 solo/{sublib}/Aligned.sortedByCoord.out.bam(.bai)
 solo/{sublib}/Solo.out/{Gene,GeneFull,SJ}/raw/             (per-cell matrices)
-split/{sublib}/cell_groups.tsv, cells_per_group.tsv, bams/<donor>__<sort>.bam
+split/groups.tsv, cells_per_group.tsv                      (donor × sort groups)
+split/{sublib}/cell_groups.tsv, bams/<donor>__<sort>.bam   (per sublibrary)
+groups/<donor>__<sort>.bam(.bai)          (merged over sublibraries: target `bams`)
+junctions/sj_counts.by_group.tsv.gz       (junction × group counts: `junctions`)
+junctions/sj_counts.report.tsv
 ```
 
 - **Cell barcodes.** The BAM `CB` tag is the 24-nt `bc1(T)+bc2+bc3` sequence;
   `whitelist/{sublib}/cells.tsv` maps it back to `bc_wells` and split-pipe's
   metadata. CBs are only unique **within** a sublibrary.
 - **Group names.** Donor × sort names are made filesystem-safe: `P89/08` →
-  `P89-08`.
+  `P89-08`, giving `P89-08__K_negative`.
+- **Two junction routes.** `junctions/sj_counts.by_group.tsv.gz` comes straight
+  from STARsolo's per-cell `SJ` matrices summed over each group's cells: one
+  row per junction, one column per donor × sort, `chr`/`start`/`end` first.
+  The merged BAMs in `groups/` are for anything that needs reads rather than
+  counts — regtools + leafcutter, MAJIQ, or IGV.
+- **Groups are global.** `split.min_cells` counts a donor × sort over all 16
+  sublibraries, so a group is kept or dropped everywhere at once.
 
 ## Things to know
 
@@ -172,8 +195,9 @@ split/{sublib}/cell_groups.tsv, cells_per_group.tsv, bams/<donor>__<sort>.bam
   `pooled_junctions.sjdb.tsv`, so ParseFANS1's BAM will be regenerated when the
   other 15 are added. That is intentional: every sample aligns against the same
   junction set.
-- **Split BAMs are per sublibrary.** Merging a donor × sort across sublibraries
-  (`samtools merge`) is not yet a rule.
+- **Cell barcodes are only unique within a sublibrary.** The merged group BAMs
+  carry `RG` per sublibrary (`samtools merge -r`), so a nucleus is `RG` + `CB`,
+  and a molecule is `RG` + `CB` + `UB`.
 - **Scratch space.** STAR's BAM sort spills to `tmp_dir` (default
   `<results_dir>/tmp`). The 50 G `tscratch` used for split-pipe is too small.
 - **Resources are estimates.** `config/cluster.yaml` walltimes are generous;

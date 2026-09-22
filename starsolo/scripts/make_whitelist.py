@@ -24,35 +24,73 @@ ap.add_argument("--tag", default="")
 ap.add_argument("--bc1", required=True)
 ap.add_argument("--bc2", required=True)
 ap.add_argument("--bc3", required=True)
+ap.add_argument("--subset-file", default="",
+                help="optional: keep only cells listed here (e.g. the QC/annotation table)")
+ap.add_argument("--subset-column", default="bc_wells",
+                help="barcode column in --subset-file; a __s<sublibrary> suffix is handled")
 ap.add_argument("--out-cells", required=True)
 ap.add_argument("--out-whitelist", required=True)
 a = ap.parse_args()
 
-sep = "," if a.cells_file.endswith((".csv", ".csv.gz")) else "\t"
-df = pd.read_csv(a.cells_file, sep=sep, dtype={a.barcode_column: str})
+def read_table(path, **kw):
+    sep = "," if str(path).endswith((".csv", ".csv.gz")) else "\t"
+    return pd.read_csv(path, sep=sep, **kw)
+
+
+def strip_suffix(bc, path, sublib, tag):
+    """'01_01_67__s1' -> '01_01_67', keeping only this sublibrary's rows.
+
+    Returns (barcodes_without_suffix, keep_mask). A file with no suffix at all
+    is assumed to be this sublibrary's.
+    """
+    suffixed = bc.str.contains("__s", regex=False)
+    if not suffixed.any():
+        print(f"[whitelist] {path}: no __s suffix, treating every row as {sublib}")
+        return bc, bc.notna()
+    if not suffixed.all():
+        sys.exit(f"{path}: some barcodes carry a __s<sublibrary> suffix and some do not")
+    parts = bc.str.split("__s", n=1, expand=True)
+    wanted = {sublib} | ({tag} if tag else set())
+    keep = parts[1].isin(wanted)
+    if not keep.any():
+        seen = sorted(parts[1].dropna().unique())[:20]
+        sys.exit(f"{path}: no rows with suffix in {sorted(wanted)}; suffixes present: {seen}. "
+                 "Set cells_tag for this sublibrary in config/sublibraries.tsv.")
+    return parts[0], keep
+
+
+df = read_table(a.cells_file, dtype={a.barcode_column: str})
 if a.barcode_column not in df.columns:
     sys.exit(f"Column '{a.barcode_column}' not in {a.cells_file}: {list(df.columns)}")
 
 bc = df[a.barcode_column].astype(str)
-suffixed = bc.str.contains("__s", regex=False)
-if suffixed.any():
-    if not suffixed.all():
-        sys.exit(f"{a.cells_file}: some barcodes carry a __s<sublibrary> suffix and some do not")
-    parts = bc.str.split("__s", n=1, expand=True)
-    wanted = {a.sublibrary} | ({a.tag} if a.tag else set())
-    keep = parts[1].isin(wanted)
-    if not keep.any():
-        seen = sorted(parts[1].unique())[:20]
-        sys.exit(f"No rows with suffix in {sorted(wanted)}; suffixes present: {seen}. "
-                 "Set cells_tag for this sublibrary in config/sublibraries.tsv.")
-    df = df[keep].copy()
-    df["barcode_original"] = bc[keep]
-    df["bc_wells"] = parts[0][keep]
-else:
-    print(f"[whitelist] no __s suffix: treating every row as {a.sublibrary}")
-    df = df.copy()
-    df["barcode_original"] = bc
-    df["bc_wells"] = bc
+stripped, keep = strip_suffix(bc, a.cells_file, a.sublibrary, a.tag)
+df = df[keep].copy()
+df["barcode_original"] = bc[keep]
+df["bc_wells"] = stripped[keep]
+
+# Optional: keep only the cells that passed QC / cell typing. Alignment then
+# covers fewer reads, at the cost of a re-extract if that list ever changes.
+if a.subset_file:
+    sub = read_table(a.subset_file, dtype={a.subset_column: str})
+    if a.subset_column not in sub.columns:
+        sys.exit(f"Column '{a.subset_column}' not in {a.subset_file}: {list(sub.columns)}")
+    sub_bc, sub_keep = strip_suffix(sub[a.subset_column].astype(str), a.subset_file,
+                                    a.sublibrary, a.tag)
+    wanted = set(sub_bc[sub_keep])
+    if not wanted:
+        sys.exit(f"{a.subset_file}: no cells for {a.sublibrary}")
+    in_list = df["bc_wells"].isin(wanted)
+    missing = len(wanted) - int(in_list.sum())
+    print(f"[whitelist] subset {a.subset_file}: {len(wanted)} cells for {a.sublibrary}, "
+          f"{int(in_list.sum())} of them in the split-pipe cell list")
+    if missing:
+        # Every QC'd cell should be a split-pipe cell; if not, the two files
+        # describe different runs and the barcodes cannot be compared.
+        example = sorted(wanted - set(df["bc_wells"]))[:5]
+        sys.exit(f"{missing} cells in {a.subset_file} are not in {a.cells_file} "
+                 f"(e.g. {example}) -- are they from the same split-pipe run?")
+    df = df[in_list].copy()
 
 wells = df["bc_wells"].str.split("_", expand=True)
 if wells.shape[1] != 3:

@@ -25,6 +25,14 @@ cells:
   barcode_column: bc_wells
   read_count_column: mread_count
   sort_column: sample          # K_negative / TDP_negative / positive
+  # Optional: align only these cells (the QC-passed, cell-typed, non-control
+  # table from R). Everything else -- mread_count for validation, split-pipe's
+  # metadata -- still comes from `file` above, this only filters it.
+  # Changing this file means re-extracting and re-aligning, so fix the cell
+  # list before running. Set file: null to align every called cell.
+  subset:
+    file: /SAN/neuroscience/direct_nanopore_rna/ariana_parse/resources/qc_passed_celltypes.csv
+    barcode_column: bc_wells   # "01_01_67__s1" -- the __s suffix is handled
 
 # --- Parse barcode tables -------------------------------------------------------
 # REQUIRED before anything but the reference will run. split-pipe ships these
@@ -110,14 +118,19 @@ star:
   sam_attributes: "NH HI AS nM NM MD jM jI CB UB GX GN sM"
   bam_sort_ram_gb: 20
 
-# --- Donor x sort BAMs (target: split) -----------------------------------------
-# The main pipeline's per-cell donor table (demux.mode: provided).
+# --- Donor x sort BAMs and junctions (targets: split, bams, junctions) --------
+# One row per cell, from the R cell-typing pass: the cells to group, their donor
+# and their sort. Normally the same file as cells.subset above, so that every
+# aligned cell is also grouped.
 split:
-  donor_table: /SAN/neuroscience/direct_nanopore_rna/ariana_parse/spipe_jh_donor_annotations/demux/donor_assignments.all_sublibraries.tsv
+  annotation: /SAN/neuroscience/direct_nanopore_rna/ariana_parse/resources/qc_passed_celltypes.csv
   donor_column: donor_id
-  barcode_column: barcode      # bc_wells, no sublibrary suffix
-  sublibrary_column: sublibrary
-  condition_column: condition  # cross-checked against split-pipe's sort
+  barcode_column: bc_wells     # "01_01_67__s1"; the suffix picks the sublibrary
+  condition_column: sample     # sort in the annotation; cross-checked against
+                               # split-pipe's own `sample` column
+  # Drop donor x sort groups with fewer cells than this, counted over all 16
+  # sublibraries. Pseudobulk junction counts from a handful of nuclei are noise.
+  min_cells: 50
 
 # --- Threads: MUST match "-pe smp N" in config/cluster.yaml -------------------
 threads:
@@ -129,3 +142,4 @@ threads:
   star_solo: 8
   index_bam: 4
   split_bam: 8
+  merge_group_bam: 4

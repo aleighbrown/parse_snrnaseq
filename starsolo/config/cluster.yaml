@@ -79,10 +79,10 @@ index_bam:
     h_rt:   "4:00:00"
     submission_string: "-pe smp 4 -R y"
 
-split_groups:
-    h_vmem: 8G
-    tmem:   8G
-    h_rt:   "1:00:00"
+group_table:
+    h_vmem: 16G
+    tmem:   16G
+    h_rt:   "2:00:00"
     submission_string: " "
 
 split_bam:
@@ -90,3 +90,17 @@ split_bam:
     tmem:   4G
     h_rt:   "24:00:00"
     submission_string: "-pe smp 8 -R y"
+
+# samtools merge of <=16 small BAMs per donor x sort group.
+merge_group_bam:
+    h_vmem: 4G
+    tmem:   4G
+    h_rt:   "4:00:00"
+    submission_string: "-pe smp 4 -R y"
+
+# Streams all 16 Solo.out SJ matrices; holds one row per junction in memory.
+sj_matrix:
+    h_vmem: 32G
+    tmem:   32G
+    h_rt:   "8:00:00"
+    submission_string: " "

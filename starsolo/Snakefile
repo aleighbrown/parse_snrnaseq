@@ -13,13 +13,16 @@
 #   first 2M reads ─► strand test: --soloStrand Forward vs Reverse
 #   R1 ─► STAR pass 1 ─► novel junctions pooled over ALL sublibraries
 #   R1 + R2 ─► STARsolo pass 2 ─► sorted BAM (CB/UB) + Gene/GeneFull/SJ matrices
-#        └─► target `split`: one BAM per donor x sort (sinto)
+#        └─► target `split`:    per-sublibrary BAM per donor x sort (sinto)
+#        └─► target `bams`:     those merged over sublibraries, one per group
+#        └─► target `junctions`: SJ matrices summed into junction x group counts
 #
 # Run from THIS directory (starsolo/):
 #   snakemake -n                      dry run
 #   source submit.sh                  pilot (rule all)
 #   source submit.sh layout           barcode layout only (minutes)
 #   source submit.sh reference        STAR index only
+#   source submit.sh splicing         merged donor x sort BAMs + junction matrix
 # =============================================================================
 import os
 import re
@@ -37,6 +40,9 @@ REF = config["reference"]
 REF_DIR = REF["dir"].rstrip("/")
 STAR = config["star"]
 BC = config["parse_barcodes"]
+SPLIT = config["split"]
+# Optional: restrict the whitelist to QC-passed / annotated cells.
+SUBSET = config["cells"].get("subset") or {}
 LAYOUT = BC.get("layout") or {}
 
 # --- tools: no conda ---------------------------------------------------------
@@ -78,6 +84,8 @@ SUBLIBS = subs.index.tolist()
 
 wildcard_constraints:
     sublib="|".join(re.escape(s) for s in SUBLIBS),
+    # group_table.py makes group names filesystem-safe: donor__sort.
+    group=r"[A-Za-z0-9._-]+__[A-Za-z0-9._-]+",
 
 WL = RESULTS + "/whitelist/{sublib}"
 EX = RESULTS + "/extract/{sublib}"
@@ -125,6 +133,17 @@ def opt(v):
 
 BC_INPUTS = dict(bc1=barcode_table("bc1"), bc2=barcode_table("bc2"), bc3=barcode_table("bc3"))
 
+
+def groups_kept(wc=None):
+    """Group names from the checkpoint -- known only after group_table has run."""
+    path = checkpoints.group_table.get().output.groups
+    table = pd.read_csv(path, sep="\t", dtype=str)
+    return table["group"].tolist()
+
+
+def group_bams(wc=None):
+    return [RESULTS + "/groups/" + g + ".bam.bai" for g in groups_kept()]
+
 # A reference that already exists is used as-is and has NO rule -- so no run
 # of this workflow can ever decide to rebuild (and first delete) a shared index.
 REF_BUILT = os.path.exists(os.path.join(REF_DIR, "SA")) and os.path.exists(
@@ -133,7 +152,7 @@ REF_BUILT = os.path.exists(os.path.join(REF_DIR, "SA")) and os.path.exists(
 
 
 # --- targets -----------------------------------------------------------------
-localrules: all, tools, reference, layout, extract, strand, split
+localrules: all, tools, reference, layout, extract, strand, split, bams, junctions, splicing
 
 rule all:
     input:
@@ -160,6 +179,21 @@ rule split:
     input:
         expand(RESULTS + "/split/{sublib}/.split.done", sublib=SUBLIBS),
 
+# Per donor x sort, merged over all 16 sublibraries: a BAM for regtools /
+# leafcutter / MAJIQ / IGV, and the junction count matrix.
+rule bams:
+    input:
+        group_bams,
+
+rule junctions:
+    input:
+        RESULTS + "/junctions/sj_counts.by_group.tsv.gz",
+
+rule splicing:
+    input:
+        group_bams,
+        RESULTS + "/junctions/sj_counts.by_group.tsv.gz",
+
 # `source submit.sh tools`: runs on the login node in seconds and fails if any
 # tool the jobs need is missing. Never cached -- no output file.
 rule tools:
@@ -183,6 +217,7 @@ rule tools:
 rule make_whitelist:
     input:
         cells=ancient(config["cells"]["file"]),
+        subset=ancient(SUBSET["file"]) if SUBSET.get("file") else [],
         **BC_INPUTS,
     output:
         cells=WL + "/cells.tsv",
@@ -191,6 +226,7 @@ rule make_whitelist:
         scripts=SCRIPTS,
         col=config["cells"]["barcode_column"],
         tag=lambda wc: subs.loc[wc.sublib, "cells_tag"],
+        subset=("--subset-file " + SUBSET["file"] + " --subset-column " + SUBSET["barcode_column"]) if SUBSET.get("file") else "",
     log:
         "logs/whitelist/{sublib}.log",
     shell:
@@ -200,6 +236,7 @@ rule make_whitelist:
             --barcode-column {params.col} \
             --sublibrary {wildcards.sublib} \
             --tag '{params.tag}' \
+            {params.subset} \
             --bc1 {input.bc1} --bc2 {input.bc2} --bc3 {input.bc3} \
             --out-cells {output.cells} \
             --out-whitelist {output.whitelist} > {log} 2>&1
@@ -551,31 +588,38 @@ rule index_bam:
 
 
 # --- donor x sort BAMs (target: split) ---------------------------------------
-rule split_groups:
+# One job for every sublibrary: min_cells then counts a donor x sort group over
+# the whole experiment, not one sublibrary at a time. A checkpoint, because the
+# group names (and so the merged BAMs) are only known once it has run.
+checkpoint group_table:
     input:
-        cells=WL + "/cells.tsv",
-        donors=ancient(config["split"]["donor_table"]),
+        cells=expand(WL + "/cells.tsv", sublib=SUBLIBS),
+        annotation=ancient(SPLIT["annotation"]),
     output:
-        groups=RESULTS + "/split/{sublib}/cell_groups.tsv",
-        summary=RESULTS + "/split/{sublib}/cells_per_group.tsv",
+        groups=RESULTS + "/split/groups.tsv",
+        summary=RESULTS + "/split/cells_per_group.tsv",
+        per_sublib=expand(RESULTS + "/split/{sublib}/cell_groups.tsv", sublib=SUBLIBS),
     params:
         scripts=SCRIPTS,
-        donor_col=config["split"]["donor_column"],
-        bc_col=config["split"]["barcode_column"],
-        sublib_col=config["split"]["sublibrary_column"],
-        cond_col=config["split"]["condition_column"],
+        outdir=RESULTS + "/split",
+        sublibs=" ".join(SUBLIBS),
+        donor_col=SPLIT["donor_column"],
+        bc_col=SPLIT["barcode_column"],
+        cond_col=SPLIT["condition_column"],
         sort_col=config["cells"]["sort_column"],
+        min_cells=SPLIT.get("min_cells", 0),
     log:
-        "logs/split/{sublib}.groups.log",
+        "logs/split/group_table.log",
     shell:
         r"""
-        python {params.scripts}/split_groups.py \
-            --cells {input.cells} --donor-table {input.donors} \
-            --sublibrary {wildcards.sublib} \
+        python {params.scripts}/group_table.py \
+            --cells {input.cells} --sublibraries {params.sublibs} \
+            --annotation {input.annotation} \
             --donor-column {params.donor_col} --barcode-column {params.bc_col} \
-            --sublibrary-column {params.sublib_col} \
             --condition-column {params.cond_col} --sort-column {params.sort_col} \
-            --out {output.groups} --summary {output.summary} > {log} 2>&1
+            --min-cells {params.min_cells} \
+            --outdir {params.outdir} --groups {output.groups} \
+            --summary {output.summary} > {log} 2>&1
         """
 
 
@@ -608,4 +652,72 @@ rule split_bam:
                 samtools index -@ {threads} "$b"
             fi
         done
+        """
+
+
+# --- merged donor x sort BAMs ------------------------------------------------
+# `samtools merge -r` reads the read group from each file name, so the merged
+# BAM records which sublibrary every read came from. That matters here: cell
+# barcodes are only unique WITHIN a sublibrary, so CB alone does not identify a
+# nucleus in a merged BAM -- use RG + CB (and RG + CB + UB to deduplicate).
+rule merge_group_bam:
+    input:
+        # Directories, so a group missing from a sublibrary is simply not merged.
+        expand(RESULTS + "/split/{sublib}/.split.done", sublib=SUBLIBS),
+    output:
+        bam=RESULTS + "/groups/{group}.bam",
+        bai=RESULTS + "/groups/{group}.bam.bai",
+    params:
+        split=RESULTS + "/split",
+        tmp=TMP_ROOT + "/merge.{group}",
+        sublibs=" ".join(SUBLIBS),
+    threads: nthreads("merge_group_bam")
+    log:
+        "logs/groups/{group}.merge.log",
+    shell:
+        r"""
+        rm -rf {params.tmp}
+        mkdir -p {params.tmp} $(dirname {output.bam})
+        n=0
+        for s in {params.sublibs}; do
+            b={params.split}/$s/bams/{wildcards.group}.bam
+            if [ -s "$b" ]; then
+                ln -s "$(readlink -f $b)" {params.tmp}/$s.bam
+                n=$((n + 1))
+            fi
+        done
+        if [ "$n" -eq 0 ]; then
+            echo "no sublibrary has a BAM for group {wildcards.group}" >&2
+            exit 1
+        fi
+        echo "[merge] {wildcards.group}: $n sublibraries" > {log}
+        samtools merge -r -f -@ {threads} {output.bam} {params.tmp}/*.bam 2>> {log}
+        samtools index -@ {threads} {output.bam} 2>> {log}
+        rm -rf {params.tmp}
+        """
+
+
+# --- junction x group count matrix -------------------------------------------
+# From STARsolo's per-cell SJ matrices, summed over each group's cells. No BAM
+# is read, so this does not depend on the merge above.
+rule sj_matrix:
+    input:
+        solo=expand(SOLO + "/Solo.out", sublib=SUBLIBS),
+        groups=expand(RESULTS + "/split/{sublib}/cell_groups.tsv", sublib=SUBLIBS),
+    output:
+        matrix=RESULTS + "/junctions/sj_counts.by_group.tsv.gz",
+        report=RESULTS + "/junctions/sj_counts.report.tsv",
+    params:
+        scripts=SCRIPTS,
+        raw=lambda wc, input: " ".join(d + "/SJ/raw" for d in input.solo),
+        sublibs=" ".join(SUBLIBS),
+    log:
+        "logs/junctions/sj_matrix.log",
+    shell:
+        r"""
+        python {params.scripts}/aggregate_sj.py \
+            --solo {params.raw} \
+            --groups {input.groups} \
+            --sublibraries {params.sublibs} \
+            --out {output.matrix} --report {output.report} > {log} 2>&1
         """
