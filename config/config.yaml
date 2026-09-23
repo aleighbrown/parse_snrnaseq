@@ -261,6 +261,17 @@ celltype:
     # celltype_cluster reservation.
     workers: 2
 
+  # Ambient RNA (workflow/rules/soupx.smk). Step 1, soup_profile, sums the
+  # empty barcodes of each sort's split-pipe DGE_unfiltered.
+  soupx:
+    # Empty barcodes: not an all-sample called cell, and UMIs (tscp_count) in
+    # this closed range. Called cells start at ~300 UMIs (celltype.qc), so 100
+    # leaves a margin; check the shaded band on soup_report.pdf's rank plot.
+    # The lower bound drops 1-9 UMI barcodes, which are mostly barcode errors.
+    empty_umi_range: [10, 100]
+    # Rows in top_soup_genes.tsv, the list to choose rho marker sets from.
+    n_top_genes: 200
+
 # --- Contig naming ------------------------------------------------------------
 # Only relevant to the vireo branch: applied when building the genotype panel,
 # to make its contigs match the BAM. With the GENCODE reference above the BAM is
@@ -295,3 +306,4 @@ threads:
   celltype_doublets: 2
   celltype_cluster: 4
   celltype_cluster_test: 2
+  soup_profile: 1

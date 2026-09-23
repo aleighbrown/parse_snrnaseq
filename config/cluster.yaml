@@ -209,3 +209,15 @@ celltype_cluster_test:
     h_rt:   "1:00:00"
     tscratch: 5G
     submission_string: "-pe smp 2 -R y"
+
+# --- Ambient RNA (SoupX) --------------------------------------------------------
+# One per sort: a single awk pass over that sort's DGE_unfiltered matrix
+# (~3-12 GB of text; 28 GB across all three), holding only the list of empty
+# rows and the running sums. The R side is the cell_metadata table (a few
+# million barcodes). Guess: 1-2 h, a few GB; trim from the log's peak.
+soup_profile:
+    h_vmem: 16G
+    tmem:   16G
+    h_rt:   "6:00:00"
+    tscratch: 5G
+    submission_string: " "
