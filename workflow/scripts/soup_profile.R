@@ -89,12 +89,23 @@ if (n_cell_in_range > 0) {
           "the soup regardless, but the range reaches into cell territory: see the rank plot")
 }
 
+# The background floor: what a barcode with no nucleus picks up. Taken over
+# ALL uncalled barcodes, not just the empty window, so it does not depend on
+# where the window was put. Nearly every possible barcode is seen in these
+# sublibraries, so the uncalled ones are a near-complete sample of it. The
+# floor / cell ratio is the per-barcode contamination a median cell would
+# carry if the background is a fixed count per barcode.
 bc_summary <- cells[, .(n_barcodes = .N,
                         n_cells    = sum(status == "cell"),
                         n_empty    = sum(status == "empty"),
                         empty_umis = sum(as.numeric(tscp_count[status == "empty"])),
-                        median_cell_umis = as.numeric(median(tscp_count[status == "cell"]))),
+                        median_cell_umis     = as.numeric(median(tscp_count[status == "cell"])),
+                        uncalled_q25_umis    = as.numeric(quantile(tscp_count[status != "cell"], 0.25)),
+                        uncalled_median_umis = as.numeric(median(tscp_count[status != "cell"])),
+                        uncalled_q75_umis    = as.numeric(quantile(tscp_count[status != "cell"], 0.75)),
+                        uncalled_mean_umis   = mean(tscp_count[status != "cell"])),
                     by = .(sub_n, sublibrary)][order(sub_n)]
+bc_summary[, floor_to_cell := uncalled_median_umis / median_cell_umis]
 bc_summary[, sort := opt$sort]
 fwrite(bc_summary, out("barcode_summary.tsv"), sep = "\t")
 print(bc_summary)
@@ -186,6 +197,17 @@ print(ggplot(rk[show], aes(rank, tscp_count, colour = status)) +
              subtitle = sprintf("shaded = empty range [%g, %g]; it should sit well below the cells",
                                 umi_min, umi_max)) +
         theme_minimal(base_size = 10))
+
+# Floor per sublibrary against its cells. A flat ratio across sublibraries
+# means the background scales with depth like the cells do.
+print(ggplot(bc_summary, aes(factor(sublibrary, levels = sublibs), floor_to_cell)) +
+        geom_col(fill = "grey40") +
+        scale_y_continuous(labels = function(x) paste0(100 * x, "%")) +
+        labs(x = NULL, y = "median uncalled UMIs / median cell UMIs",
+             title = paste0(opt$sort, ": background floor relative to the cells"),
+             subtitle = "the contamination a median cell carries if background is a fixed count per barcode") +
+        theme_minimal(base_size = 10) +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1)))
 
 print(ggplot(bc_summary, aes(factor(sublibrary, levels = sublibs), empty_umis)) +
         geom_col(fill = "#A50F15") +

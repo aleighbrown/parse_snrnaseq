@@ -210,6 +210,25 @@ celltype_cluster_test:
     tscratch: 5G
     submission_string: "-pe smp 2 -R y"
 
+# --- Doublets per sort (workflow/rules/doublets_by_sort.smk) ------------------
+# Same work as celltype_doublets, split into up to three scDblFinder calls per
+# sublibrary: similar or less time and memory. Shared by the full run and test.
+celltype_doublets_by_sort:
+    h_vmem: 8G
+    tmem:   8G
+    h_rt:   "8:00:00"
+    tscratch: 5G
+    submission_string: "-pe smp 2 -R y"
+
+# Joins the two doublet tables with cell_meta.rds and the annotation columns it
+# needs (~426k rows each); plots. Guess: ~10-15 GB, well under an hour.
+doublets_compare:
+    h_vmem: 24G
+    tmem:   24G
+    h_rt:   "2:00:00"
+    tscratch: 5G
+    submission_string: "-pe smp 1 -R y"
+
 # --- Ambient RNA (SoupX) --------------------------------------------------------
 # One per sort: a single awk pass over that sort's DGE_unfiltered matrix
 # (~3-12 GB of text; 28 GB across all three), holding only the list of empty

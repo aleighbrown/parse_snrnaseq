@@ -265,12 +265,35 @@ celltype:
   # empty barcodes of each sort's split-pipe DGE_unfiltered.
   soupx:
     # Empty barcodes: not an all-sample called cell, and UMIs (tscp_count) in
-    # this closed range. Called cells start at ~300 UMIs (celltype.qc), so 100
-    # leaves a margin; check the shaded band on soup_report.pdf's rank plot.
+    # this closed range; check the shaded band on soup_report.pdf's rank plot.
     # The lower bound drops 1-9 UMI barcodes, which are mostly barcode errors.
-    empty_umi_range: [10, 100]
+    #
+    # Per sort, because the background level is. The negative sorts spread a
+    # few thousand cells per sublibrary over 43 wells (396k barcodes) and sit
+    # at ~40-50 UMIs per empty barcode. `positive` packs ~20k cells per
+    # sublibrary into 10 wells (92k barcodes): its background plateau runs
+    # ~100-1000 UMIs, so [10, 100] caught only its low tail. 500 keeps a margin
+    # below the knee where the called cells start.
+    empty_umi_range:
+      default: [10, 100]
+      positive: [10, 500]
     # Rows in top_soup_genes.tsv, the list to choose rho marker sets from.
     n_top_genes: 200
+
+  # Alternative doublet arm (workflow/rules/doublets_by_sort.smk), run beside
+  # celltype.doublets, not instead of it. Two nuclei can only collide if they
+  # share a round-1 well, so each sort has its own barcode space
+  # (its round-1 wells x barcodes_per_r1_well) and its own collision rate.
+  # Within each sublibrary, scDblFinder runs once per sort with
+  #   lambda = -ln(1 - called_barcodes / space)       (occupancy)
+  #   dbr    = 1 - lambda e^-lambda / (1 - e^-lambda) (share of barcodes with >1 nucleus)
+  # counted from ALL split-pipe called barcodes of that sort, before QC.
+  # Nuclei that were loaded but never called push the true rate a little
+  # higher; dbr_sd_rel gives scDblFinder room around it.
+  doublets_by_sort:
+    barcodes_per_r1_well: 9216     # 96 round-2 x 96 round-3 wells (WT_mega)
+    dbr_sd_rel: 0.3                # dbr.sd = dbr_sd_rel * dbr
+    min_cells: 200                 # per sort per sublibrary; fewer -> left uncalled
 
 # --- Contig naming ------------------------------------------------------------
 # Only relevant to the vireo branch: applied when building the genotype panel,
@@ -306,4 +329,6 @@ threads:
   celltype_doublets: 2
   celltype_cluster: 4
   celltype_cluster_test: 2
+  celltype_doublets_by_sort: 2
+  doublets_compare: 1
   soup_profile: 1

@@ -42,7 +42,16 @@ wildcard_constraints:
 localrules: soup_profiles
 
 
+def soup_umi_range(sort):
+    """[min, max] UMIs of an empty barcode for this sort: the sort's own entry
+    in soupx.empty_umi_range, else its `default` (a bare [min, max] applies
+    to every sort)."""
+    r = SX["empty_umi_range"]
+    return r.get(sort, r["default"]) if isinstance(r, dict) else r
+
+
 def soup_profile_args(wc):
+    umi_min, umi_max = soup_umi_range(wc.soup_sort)
     return ct_fmt({
         "dge_dir": os.path.join(SPIPE_COMBINED, wc.soup_sort, "DGE_unfiltered"),
         "called_cells": CT_DGE + "/cell_metadata.csv",
@@ -50,8 +59,8 @@ def soup_profile_args(wc):
         "sublibraries": config["sublibraries"],
         "sort": wc.soup_sort,
         "out_dir": SOUP_DIR + "/" + wc.soup_sort,
-        "umi_min": SX["empty_umi_range"][0],
-        "umi_max": SX["empty_umi_range"][1],
+        "umi_min": umi_min,
+        "umi_max": umi_max,
         "n_top": SX["n_top_genes"],
     })
 
