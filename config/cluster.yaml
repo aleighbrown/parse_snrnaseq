@@ -240,3 +240,24 @@ soup_profile:
     h_rt:   "6:00:00"
     tscratch: 5G
     submission_string: " "
+
+# One per sort: reads all 16 prep/counts files one at a time (~13 GB in
+# total) and keeps only that sort's candidate glia (<= soupx.max_cells), then
+# two SoupX fits. Guess: 30-60 min; ~10-20 GB, mostly one sublibrary in
+# memory plus the kept cells.
+soupx_rho:
+    h_vmem: 32G
+    tmem:   32G
+    h_rt:   "4:00:00"
+    tscratch: 5G
+    submission_string: " "
+
+# One per sublibrary (~26k cells), up to three SoupX channels in turn. Cells
+# that were never clustered are corrected one by one, which is the slow part.
+# Guess: 30-90 min, several GB; trim from the log's peak.
+soupx_adjust:
+    h_vmem: 24G
+    tmem:   24G
+    h_rt:   "6:00:00"
+    tscratch: 5G
+    submission_string: " "

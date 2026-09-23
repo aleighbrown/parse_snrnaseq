@@ -280,6 +280,34 @@ celltype:
     # Rows in top_soup_genes.tsv, the list to choose rho marker sets from.
     n_top_genes: 200
 
+    # --- soupx_rho / soupx_adjust ---
+    # Cluster + cell-type labels: a FROZEN copy of a finished run's
+    # cell_annotations.csv, at <results_dir>/<run>/<labels_file>. No rule
+    # makes it; copy it in by hand, e.g.
+    #   cp celltype/cell_annotations.csv celltype/first_pass_annotations.csv
+    labels_file: first_pass_annotations.csv
+    # Genes no glial nucleus should express, all well represented in the soup
+    # (top_soup_genes.tsv). RBFOX3 is left out on purpose: whether K_negative
+    # microglia carry NeuN is one of the questions, and using it here would
+    # assume the answer.
+    marker_sets:
+      neuronal: [SYT1, SNAP25, RALYL, MYT1L, STXBP5L, CACNA1B, SYN3]
+    # rho is estimated on cells of these predicted.class values...
+    estimate_class: [Non-Neuronal]
+    # ...minus these predicted.subclass values: OPCs express some of the
+    # synaptic markers (54-77% exceeded the soup expectation).
+    exclude_subclasses: [OPC]
+    # Azimuth predicted.subclass.score below this -> not used for rho.
+    min_label_score: 0.8
+    # Candidate cells per sort (a random sample above this).
+    max_cells: 50000
+    # Fewer cells than this after SoupX's per-cluster exclusion -> fall back
+    # to per-cell exclusion (clusters = FALSE). Both are always reported.
+    min_est_cells: 500
+    # null: use soupx_rho's estimates. Or override per sort, e.g.
+    #   rho: {K_negative: 0.05, TDP_negative: 0.04, positive: 0.12}
+    rho: null
+
   # Alternative doublet arm (workflow/rules/doublets_by_sort.smk), run beside
   # celltype.doublets, not instead of it. Two nuclei can only collide if they
   # share a round-1 well, so each sort has its own barcode space
@@ -332,3 +360,5 @@ threads:
   celltype_doublets_by_sort: 2
   doublets_compare: 1
   soup_profile: 1
+  soupx_rho: 1
+  soupx_adjust: 1

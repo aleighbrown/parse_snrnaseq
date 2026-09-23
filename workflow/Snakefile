@@ -110,8 +110,8 @@ if DEMUX_MODE == "vireo":
 include: "rules/aggregate.smk"      # final assignment table + summary
 include: "rules/celltype.smk"       # QC + Harmony + Azimuth -> cell_annotations.csv
                                     #   (own targets: celltype, celltype_test)
-include: "rules/soupx.smk"          # ambient RNA; so far the per-sort soup profile
-                                    #   (own target: soup_profiles)
+include: "rules/soupx.smk"          # ambient RNA: soup profile -> rho -> corrected counts
+                                    #   (own targets: soup_profiles, soupx_rhos, soupx)
 include: "rules/doublets_by_sort.smk"  # per-sort doublet arm + comparison with the default
                                       #   (own targets: doublets_by_sort, doublets_by_sort_test)
 
