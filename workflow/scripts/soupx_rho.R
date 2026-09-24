@@ -50,8 +50,9 @@
 # TDP_negative), where most doublets involving glia are neuron + glia. So rho
 # is refitted, with per-cell exclusion, at each value in
 # max_contamination_check. A rho that holds as the threshold drops is robust;
-# one that falls was carried by that tail. The main rho stays at SoupX's
-# default; override it in config (soupx.rho) if the check says so.
+# one that falls was carried by that tail. The main estimate uses
+# soupx.max_contamination (0.5, chosen from this check); soupx.rho can still
+# override the result per sort.
 #
 # Next: soupx_adjust.R. See workflow/rules/soupx.smk.
 # =============================================================================
@@ -69,7 +70,8 @@ suppressPackageStartupMessages({
 
 need_args(c("sort", "labels", "prep_dir", "doublet_dir", "sublibraries", "soup_profile",
             "barcode_summary", "marker_sets", "estimate_class", "exclude_subclasses",
-            "min_label_score", "max_cells", "min_est_cells", "max_contamination_check",
+            "min_label_score", "max_cells", "min_est_cells", "max_contamination",
+            "max_contamination_check",
             "out_dir", "threads", "seed"))
 setup_threads(as.integer(num("threads")))
 seed <- as.integer(num("seed"))
@@ -164,10 +166,12 @@ fit_mode <- function(clusters_arg, max_cont = 1) {
   list(use = use, n = n_use, rho = fit$metaData$rho[1],
        low = fit$metaData$rhoLow[1], high = fit$metaData$rhoHigh[1])
 }
-by_cluster <- fit_mode(NULL)
+main_mc <- num("max_contamination")
+step("main estimate at maximumContamination = ", main_mc)
+by_cluster <- fit_mode(NULL, max_cont = main_mc)
 step(sprintf("cluster exclusion: %d cells kept, rho = %.4f (%.4f-%.4f)",
              by_cluster$n, by_cluster$rho, by_cluster$low, by_cluster$high))
-by_cell <- fit_mode(FALSE)
+by_cell <- fit_mode(FALSE, max_cont = main_mc)
 step(sprintf("cell exclusion:    %d cells kept, rho = %.4f (%.4f-%.4f)",
              by_cell$n, by_cell$rho, by_cell$low, by_cell$high))
 
@@ -271,6 +275,7 @@ res <- data.table(sort = this_sort, soupx_version = as.character(packageVersion(
                   rho_cluster_high = by_cluster$high, n_est_cluster = by_cluster$n,
                   rho_cell = by_cell$rho, rho_cell_low = by_cell$low,
                   rho_cell_high = by_cell$high, n_est_cell = by_cell$n,
+                  max_contamination = main_mc,
                   floor_only_rho = floor_rho,
                   rho_at_lowest_max_cont = sens_all[which.min(max_contamination), rho],
                   lowest_max_cont = min(mc_values),

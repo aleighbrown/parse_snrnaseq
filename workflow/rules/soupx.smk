@@ -138,6 +138,7 @@ def soupx_rho_args(wc):
         "min_label_score": SX["min_label_score"],
         "max_cells": SX["max_cells"],
         "min_est_cells": SX["min_est_cells"],
+        "max_contamination": SX["max_contamination"],
         "max_contamination_check": ",".join(str(v) for v in SX["max_contamination_check"]),
         "out_dir": soupx_dir(wc.ct_run) + "/rho",
         "seed": CT["seed"],

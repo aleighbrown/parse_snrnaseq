@@ -296,7 +296,11 @@ celltype:
     # microglia carry NeuN is one of the questions, and using it here would
     # assume the answer.
     marker_sets:
-      neuronal: [SYT1, SNAP25, RALYL, MYT1L, STXBP5L, CACNA1B, SYN3]
+      neuronal: [SYT1, RALYL, MYT1L, STXBP5L, SYN3]
+    # Dropped after the per-gene check (soupx_rho breakdown, first run):
+    #   CACNA1B  astrocytes make it -- rho 14.9% in K_negative astrocytes vs
+    #            4.5-4.7% in oligodendrocytes / microglia; same in all sorts
+    #   SNAP25   raised in every glial type (1.1-1.5x the other genes)
     # rho is estimated on cells of these predicted.class values...
     estimate_class: [Non-Neuronal]
     # ...minus these predicted.subclass values: OPCs express some of the
@@ -314,6 +318,11 @@ celltype:
     # a missed neuron + glia doublet reads as a ~75%-soup glial nucleus and
     # survives the default; if rho falls as this tightens, it was inflated.
     max_contamination_check: [1.0, 0.5, 0.3]
+    # maximumContamination for the MAIN estimate. 0.5, not SoupX's default 1:
+    # the soup is neuronal, so missed neuron + glia doublets pass at 1. The
+    # check showed 1 -> 0.5 moved K_negative and positive by < 2% and removed
+    # the doublet-carried excess in TDP_negative (11.3% -> 9.1%).
+    max_contamination: 0.5
     # null: use soupx_rho's estimates. Or override per sort, e.g.
     #   rho: {K_negative: 0.05, TDP_negative: 0.04, positive: 0.12}
     rho: null
