@@ -36,7 +36,8 @@
 #   barcode_summary.tsv, sublibrary_consistency.tsv, top_soup_genes.tsv
 #   soup_report.pdf             barcode ranks with the empty range shaded
 # Steps 2-3, under <results_dir>/<run>/soupx/:
-#   rho/<sort>.tsv, rho/<sort>_breakdown.tsv, rho/<sort>_report.pdf
+#   rho/<sort>.tsv, rho/<sort>_breakdown.tsv, rho/<sort>_sensitivity.tsv,
+#   rho/<sort>_report.pdf
 #   counts/<sublib>.rds         corrected counts, same layout as prep/counts
 #   cells/<sublib>.tsv          per cell: sort, rho, UMIs before / after
 #
@@ -137,6 +138,7 @@ def soupx_rho_args(wc):
         "min_label_score": SX["min_label_score"],
         "max_cells": SX["max_cells"],
         "min_est_cells": SX["min_est_cells"],
+        "max_contamination_check": ",".join(str(v) for v in SX["max_contamination_check"]),
         "out_dir": soupx_dir(wc.ct_run) + "/rho",
         "seed": CT["seed"],
     })
@@ -155,6 +157,7 @@ rule soupx_rho:
     output:
         rho=RESULTS + "/{ct_run}/soupx/rho/{soup_sort}.tsv",
         breakdown=RESULTS + "/{ct_run}/soupx/rho/{soup_sort}_breakdown.tsv",
+        sensitivity=RESULTS + "/{ct_run}/soupx/rho/{soup_sort}_sensitivity.tsv",
         report=RESULTS + "/{ct_run}/soupx/rho/{soup_sort}_report.pdf",
     params:
         script=os.path.join(CT_SCRIPTS, "soupx_rho.R"),

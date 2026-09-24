@@ -14,6 +14,7 @@
 #     -> <out_dir>/<sort>.tsv              rho + 95% CI, both exclusion modes
 #        <out_dir>/<sort>_breakdown.tsv    the same estimate by subclass /
 #                                          sublibrary / marker set
+#        <out_dir>/<sort>_sensitivity.tsv  rho at several maximumContamination
 #        <out_dir>/<sort>_report.pdf
 #
 # Why glia only. The markers are neuronal genes, and the estimate uses only
@@ -33,6 +34,17 @@
 # Poisson GLM with an offset, the MLE is sum(observed) / sum(expected)), so
 # its pooled value reproduces SoupX's rho exactly -- checked below.
 #
+# Sensitivity to maximumContamination. estimateNonExpressingCells() only
+# drops a cell whose marker counts exceed what maximumContamination x 100%
+# soup could give (default 1). This soup is almost all neuronal, so a missed
+# neuron + glia doublet looks like a glial nucleus that is ~75% soup and
+# passes at the default -- inflating rho in the neuron-rich sorts (positive,
+# TDP_negative), where most doublets involving glia are neuron + glia. So rho
+# is refitted, with per-cell exclusion, at each value in
+# max_contamination_check. A rho that holds as the threshold drops is robust;
+# one that falls was carried by that tail. The main rho stays at SoupX's
+# default; override it in config (soupx.rho) if the check says so.
+#
 # Next: soupx_adjust.R. See workflow/rules/soupx.smk.
 # =============================================================================
 
@@ -49,7 +61,8 @@ suppressPackageStartupMessages({
 
 need_args(c("sort", "labels", "prep_dir", "doublet_dir", "sublibraries", "soup_profile",
             "barcode_summary", "marker_sets", "estimate_class", "exclude_subclasses",
-            "min_label_score", "max_cells", "min_est_cells", "out_dir", "threads", "seed"))
+            "min_label_score", "max_cells", "min_est_cells", "max_contamination_check",
+            "out_dir", "threads", "seed"))
 setup_threads(as.integer(num("threads")))
 seed <- as.integer(num("seed"))
 this_sort <- opt$sort
@@ -132,9 +145,11 @@ sc <- SoupChannel(toc, toc, calcSoupProfile = FALSE)
 sc <- setSoupProfile(sc, soup_df)
 sc <- setClusters(sc, setNames(cand$seurat_clusters, cand$bc_wells))
 
-fit_mode <- function(clusters_arg) {
-  use <- if (is.null(clusters_arg)) estimateNonExpressingCells(sc, marker_sets)
-         else estimateNonExpressingCells(sc, marker_sets, clusters = clusters_arg)
+fit_mode <- function(clusters_arg, max_cont = 1) {
+  use <- if (is.null(clusters_arg))
+           estimateNonExpressingCells(sc, marker_sets, maximumContamination = max_cont)
+         else estimateNonExpressingCells(sc, marker_sets, clusters = clusters_arg,
+                                         maximumContamination = max_cont)
   n_use <- sum(rowSums(use) > 0)
   if (n_use == 0) return(list(use = use, n = 0L, rho = NA_real_, low = NA_real_, high = NA_real_))
   fit <- calculateContaminationFraction(sc, marker_sets, useToEst = use, forceAccept = TRUE)
@@ -189,6 +204,27 @@ breakdown[, sort := this_sort]
 print(breakdown)
 fwrite(breakdown, out("_breakdown.tsv"), sep = "\t")
 
+# --- sensitivity to maximumContamination (per-cell exclusion) ---------------
+mc_values <- sort(unique(c(1, as.numeric(csv("max_contamination_check")))), decreasing = TRUE)
+sens <- rbindlist(lapply(mc_values, function(mc) {
+  f <- fit_mode(FALSE, max_cont = mc)
+  keep <- rownames(f$use)[rowSums(f$use) > 0]
+  u <- long[bc_wells %chin% keep, .(rho = sum(obs) / sum(exp), n = uniqueN(bc_wells)), by = subclass]
+  step(sprintf("maximumContamination %.2f: %d cells kept (%.1f%% excluded), rho = %.4f (%.4f-%.4f)",
+               mc, f$n, 100 * (1 - f$n / nrow(cand)), f$rho, f$low, f$high))
+  rbind(data.table(max_contamination = mc, group = "ALL", n_est = f$n,
+                   frac_excluded = 1 - f$n / nrow(cand), rho = f$rho, low = f$low, high = f$high),
+        u[, .(max_contamination = mc, group = subclass, n_est = n,
+              frac_excluded = NA_real_, rho, low = NA_real_, high = NA_real_)])
+}))
+sens[, sort := this_sort]
+print(sens)
+fwrite(sens, out("_sensitivity.tsv"), sep = "\t")
+sens_all <- sens[group == "ALL"]
+step(sprintf("rho at the lowest threshold (%.2f) is %.0f%% of rho at 1",
+             min(mc_values), 100 * sens_all[which.min(max_contamination), rho] /
+                                 sens_all[max_contamination == 1, rho]))
+
 # What the measured background floor alone would give these cells: the share
 # of rho that a fixed count per barcode explains (glia_gene_exploration.R
 # found ~70-75% in positive, ~30-50% in the negative sorts).
@@ -205,6 +241,8 @@ res <- data.table(sort = this_sort, soupx_version = as.character(packageVersion(
                   rho_cell = by_cell$rho, rho_cell_low = by_cell$low,
                   rho_cell_high = by_cell$high, n_est_cell = by_cell$n,
                   floor_only_rho = floor_rho,
+                  rho_at_lowest_max_cont = sens_all[which.min(max_contamination), rho],
+                  lowest_max_cont = min(mc_values),
                   median_umis = median(n_umis),
                   marker_sets = opt$marker_sets)
 print(t(res))
@@ -243,6 +281,32 @@ print(ggplot(cell_tot, aes(exp, obs + 0.5, colour = use)) +
              y = "observed marker counts + 0.5",
              title = paste0(this_sort, ": marker counts per cell"),
              subtitle = "red line = rho; dotted = 100% soup") +
+        theme_minimal(base_size = 9))
+# Sensitivity: rho as the exclusion threshold tightens, overall and by
+# subclass. Flat = robust; falling = carried by a doublet-like tail.
+print(ggplot(sens, aes(max_contamination, rho, colour = group)) +
+        geom_line(aes(linewidth = group == "ALL")) +
+        geom_point() +
+        scale_linewidth_manual(values = c(`TRUE` = 1.4, `FALSE` = 0.5), guide = "none") +
+        scale_x_reverse() +
+        scale_y_continuous(labels = function(x) paste0(100 * x, "%")) +
+        labs(x = "maximumContamination (cells above this x 100% soup excluded)",
+             y = "rho", colour = NULL,
+             title = paste0(this_sort, ": rho vs the exclusion threshold"),
+             subtitle = "flat = robust; falling = inflated by missed neuron + glia doublets") +
+        theme_minimal(base_size = 10))
+
+# Each cell's marker counts as a share of the 100%-soup expectation. Ambient
+# alone gives a hump near rho; doublets and real expressers form a tail.
+print(ggplot(cell_tot[exp > 0], aes(obs / exp)) +
+        geom_histogram(bins = 80, fill = "grey40") +
+        geom_vline(xintercept = chosen$rho, colour = "#A50F15") +
+        geom_vline(xintercept = mc_values, linetype = "dotted") +
+        scale_x_sqrt(limits = c(0, 2), oob = scales::squish) +
+        facet_wrap(~subclass, scales = "free_y") +
+        labs(x = "observed / expected at 100% soup (sqrt axis; > 2 squished)",
+             y = "cells", title = paste0(this_sort, ": per-cell soup share of the markers"),
+             subtitle = "red = rho; dotted = the maximumContamination thresholds tested") +
         theme_minimal(base_size = 9))
 invisible(dev.off())
 

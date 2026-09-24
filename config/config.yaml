@@ -304,6 +304,11 @@ celltype:
     # Fewer cells than this after SoupX's per-cluster exclusion -> fall back
     # to per-cell exclusion (clusters = FALSE). Both are always reported.
     min_est_cells: 500
+    # rho is refitted with per-cell exclusion at each of these
+    # maximumContamination values (SoupX default 1). The soup is neuronal, so
+    # a missed neuron + glia doublet reads as a ~75%-soup glial nucleus and
+    # survives the default; if rho falls as this tightens, it was inflated.
+    max_contamination_check: [1.0, 0.5, 0.3]
     # null: use soupx_rho's estimates. Or override per sort, e.g.
     #   rho: {K_negative: 0.05, TDP_negative: 0.04, positive: 0.12}
     rho: null
