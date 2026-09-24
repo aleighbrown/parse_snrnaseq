@@ -144,7 +144,9 @@ def ct_doublet_args(wc):
     })
 
 
-def ct_cluster_args(run):
+def ct_cluster_args(run, **override):
+    """override: extra or replaced arguments, e.g. for the SoupX re-clustering
+    (soupx.smk) -- out_dir, counts_dir, doublet_dir, floor_files, ..."""
     cl, az = CT["clustering"], CT["azimuth"]
     return ct_fmt({
         "prep_dir": ct_dir(run) + "/prep",
@@ -164,6 +166,7 @@ def ct_cluster_args(run):
         "run_azimuth": az["run"],
         "azimuth_reference": az["reference"],
         "azimuth_workers": az["workers"],
+        **override,
     })
 
 

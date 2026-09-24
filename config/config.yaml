@@ -310,9 +310,13 @@ celltype:
     min_label_score: 0.8
     # Candidate cells per sort (a random sample above this).
     max_cells: 50000
-    # Fewer cells than this after SoupX's per-cluster exclusion -> fall back
-    # to per-cell exclusion (clusters = FALSE). Both are always reported.
+    # SoupX's per-cluster exclusion is used only if it keeps at least
+    # min_est_cells cells AND min_est_frac of the candidates; otherwise
+    # per-cell exclusion (clusters = FALSE). Both are always reported. At
+    # maximumContamination 0.5, cluster mode kept 97-100% of the negative
+    # sorts' glia but 6% of positive's (whole clusters dropped for a few cells).
     min_est_cells: 500
+    min_est_frac: 0.9
     # rho is refitted with per-cell exclusion at each of these
     # maximumContamination values (SoupX default 1). The soup is neuronal, so
     # a missed neuron + glia doublet reads as a ~75%-soup glial nucleus and
@@ -323,6 +327,13 @@ celltype:
     # check showed 1 -> 0.5 moved K_negative and positive by < 2% and removed
     # the doublet-carried excess in TDP_negative (11.3% -> 9.1%).
     max_contamination: 0.5
+    # Re-clustering (celltype_cluster_soupx): cells need raw UMIs >= this
+    # multiple of their sort x sublibrary background floor (median uncalled
+    # UMIs, soup/<sort>/barcode_summary.tsv), i.e. at most 1/k of their
+    # counts from the floor. On the first pass, 5 removes no clustered cell in
+    # any sort -- a safety net. 10 would remove 44-47% of positive's
+    # oligodendrocytes and microglia (median 10-11 x floor).
+    min_floor_k: 5
     # null: use soupx_rho's estimates. Or override per sort, e.g.
     #   rho: {K_negative: 0.05, TDP_negative: 0.04, positive: 0.12}
     rho: null
@@ -381,3 +392,4 @@ threads:
   soup_profile: 1
   soupx_rho: 1
   soupx_adjust: 1
+  celltype_cluster_soupx: 4

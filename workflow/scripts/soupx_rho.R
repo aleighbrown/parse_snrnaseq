@@ -29,7 +29,10 @@
 # marker beyond what 100% soup could give (clusters = default), or only
 # those cells (clusters = FALSE). Large Harmony clusters with a few missed
 # doublets can lose every cluster, so both are fitted; the cluster mode is
-# used when it keeps >= min_est_cells cells, else the cell mode.
+# used when it keeps >= min_est_frac of the candidate cells, else the cell
+# mode. (A fixed cell count was not enough: at maximumContamination 0.5,
+# cluster mode kept 965 of positive's 15,951 glia -- its big oligodendrocyte
+# and astrocyte clusters were dropped whole for a few cells each.)
 #
 # The breakdown uses the same estimator as SoupX (for an intercept-only
 # Poisson GLM with an offset, the MLE is sum(observed) / sum(expected)), so
@@ -70,7 +73,7 @@ suppressPackageStartupMessages({
 
 need_args(c("sort", "labels", "prep_dir", "doublet_dir", "sublibraries", "soup_profile",
             "barcode_summary", "marker_sets", "estimate_class", "exclude_subclasses",
-            "min_label_score", "max_cells", "min_est_cells", "max_contamination",
+            "min_label_score", "max_cells", "min_est_cells", "min_est_frac", "max_contamination",
             "max_contamination_check",
             "out_dir", "threads", "seed"))
 setup_threads(as.integer(num("threads")))
@@ -175,7 +178,10 @@ by_cell <- fit_mode(FALSE, max_cont = main_mc)
 step(sprintf("cell exclusion:    %d cells kept, rho = %.4f (%.4f-%.4f)",
              by_cell$n, by_cell$rho, by_cell$low, by_cell$high))
 
-mode <- if (by_cluster$n >= num("min_est_cells")) "cluster" else "cell"
+keep_frac <- by_cluster$n / nrow(cand)
+mode <- if (by_cluster$n >= num("min_est_cells") && keep_frac >= num("min_est_frac")) "cluster" else "cell"
+step(sprintf("cluster exclusion kept %.1f%% of candidates (need %.0f%%)",
+             100 * keep_frac, 100 * num("min_est_frac")))
 chosen <- if (mode == "cluster") by_cluster else by_cell
 step("using ", mode, " exclusion: rho = ", signif(chosen$rho, 4))
 if (chosen$rho > 0.3) warning("rho above 0.3 -- check the report before adjusting")

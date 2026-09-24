@@ -10,6 +10,16 @@
 #     -> cell_annotations.csv: ONE ROW PER SPLIT-PIPE CELL, including the ones
 #        QC removed, so every barcode can be traced to why it is (not) labelled
 #
+# Optional arguments, used by the SoupX re-clustering (celltype_cluster_soupx
+# in soupx.smk); without them this script behaves exactly as before:
+#   --counts_dir=     read counts/<sublib>.rds from here instead of prep_dir
+#                     (SoupX-corrected counts). QC metrics stay on the raw
+#                     counts in cell_meta.rds.
+#   --floor_files=    comma-separated soup/<sort>/barcode_summary.tsv
+#   --min_floor_k=    fail cells whose raw UMIs are < k x the background floor
+#                     of their sort x sublibrary (fail_below_floor)
+#   --soupx_cells_dir= soupx/cells/<sublib>.tsv, merged into the output
+#
 # Pipeline version of 01_qc_harmony_celltyping.Rmd. Clustering is one
 # in-memory computation over every cell, so this stage is the one large job;
 # the slow, per-sublibrary doublet calling happens before it in small jobs.
@@ -50,6 +60,19 @@ sublibs <- read.delim(opt$sublibraries, comment.char = "#")$sublibrary
 meta <- readRDS(file.path(opt$prep_dir, "cell_meta.rds"))
 step("cell_meta.rds: ", nrow(meta), " cells")
 
+given <- function(k) !is.null(opt[[k]]) && !tolower(opt[[k]]) %in% c("", "none", "null")
+counts_dir <- if (given("counts_dir")) opt$counts_dir else opt$prep_dir
+step("counts from ", counts_dir)
+
+# SoupX per-cell summary (rho, UMIs removed), carried into the output.
+if (given("soupx_cells_dir")) {
+  sx <- rbindlist(lapply(sublibs, function(s) fread(file.path(opt$soupx_cells_dir, paste0(s, ".tsv")))))
+  meta[sx, `:=`(soupx_rho = i.rho, n_transcripts_corrected = i.n_umis_corrected,
+                soupx_frac_removed = i.frac_removed), on = "bc_wells"]
+  rm(sx)
+  step("SoupX: ", sum(!is.na(meta$soupx_rho)), " cells with corrected counts")
+}
+
 # =============================================================================
 # 4. Doublet calls + final QC
 # =============================================================================
@@ -63,6 +86,19 @@ meta[, fail_doublet := flag("remove_doublets") & doublet_class %in% "doublet"]
 rm(dbl, idx); invisible(gc())
 step("doublets: ", sum(meta$doublet_class %in% "doublet"), " called (",
      round(100 * mean(meta$doublet_class[meta$pre_doublet_pass] %in% "doublet"), 2), "% of tested cells)")
+
+# Minimum size relative to the background floor: a cell with k x its floor
+# carries at most 1/k background from the per-barcode floor alone.
+if (given("floor_files") && given("min_floor_k")) {
+  fl <- rbindlist(lapply(csv("floor_files"), fread))[
+    , .(sample = sort, sublibrary, floor_umis = uncalled_median_umis)]
+  meta[fl, floor_umis := i.floor_umis, on = .(sample, sublibrary)]
+  if (anyNA(meta$floor_umis)) stop(sum(is.na(meta$floor_umis)), " cells have no floor for their sort x sublibrary")
+  meta[, floor_k := n_transcripts / floor_umis]
+  meta[, fail_below_floor := floor_k < num("min_floor_k")]
+  step("below ", num("min_floor_k"), " x floor: ", sum(meta$fail_below_floor), " cells")
+  rm(fl)
+}
 
 fail_cols <- grep("^fail_", names(meta), value = TRUE)
 meta[, qc_pass := !Reduce(`|`, .SD), .SDcols = fail_cols]
@@ -106,7 +142,7 @@ cbind_csc <- function(ms) {
 
 clustered_cells <- meta$bc_wells[meta$clustered]
 pieces <- lapply(sublibs, function(s) {
-  m <- readRDS(counts_file(opt$prep_dir, s))
+  m <- readRDS(counts_file(counts_dir, s))
   m[, colnames(m) %in% clustered_cells, drop = FALSE]
 })
 counts <- cbind_csc(pieces)
@@ -198,7 +234,7 @@ if (flag("run_azimuth")) {
   step("Azimuth: ", length(cells_by_sub), " sublibraries, ", workers, " at a time, reference ", opt$azimuth_reference)
   az <- BiocParallel::bpmapply(
     azimuth_worker,
-    file = vapply(names(cells_by_sub), function(s) counts_file(opt$prep_dir, s), ""),
+    file = vapply(names(cells_by_sub), function(s) counts_file(counts_dir, s), ""),
     cells = cells_by_sub,
     MoreArgs = list(reference = opt$azimuth_reference),
     SIMPLIFY = FALSE,

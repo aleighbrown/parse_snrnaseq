@@ -8,10 +8,15 @@
 #                               calculateContaminationFraction) on that sort's
 #                               glia, pooled over all sublibraries
 #   3. soupx_adjust   16 jobs   one per sublibrary: adjustCounts per sort
+#   4. celltype_cluster_soupx  ONE big job  celltype_cluster.R again, on the
+#                               corrected counts, with the per-sort doublet
+#                               calls and a minimum size of min_floor_k x the
+#                               background floor -> <results_dir>/celltype_soupx/
 #
 #   source submit.sh soup_profiles
 #   source submit.sh soupx_rhos        # step 2 only: check rho before adjusting
 #   source submit.sh soupx             # step 3 (runs step 2 first if needed)
+#   source submit.sh celltype_soupx    # step 4 (runs 2-3 first if needed)
 #   (soupx_rhos_test / soupx_test: the same on the celltype_test cells)
 #
 # Steps 2-3 sit between celltype_prep and clustering: they read prep/counts
@@ -56,7 +61,7 @@ with open(config["splitpipe"]["sample_list"]) as fh:
 wildcard_constraints:
     soup_sort="|".join(SOUP_SORTS),
 
-localrules: soup_profiles, soupx_rhos, soupx_rhos_test, soupx, soupx_test
+localrules: soup_profiles, soupx_rhos, soupx_rhos_test, soupx, soupx_test, celltype_soupx
 
 
 def soup_umi_range(sort):
@@ -138,6 +143,7 @@ def soupx_rho_args(wc):
         "min_label_score": SX["min_label_score"],
         "max_cells": SX["max_cells"],
         "min_est_cells": SX["min_est_cells"],
+        "min_est_frac": SX["min_est_frac"],
         "max_contamination": SX["max_contamination"],
         "max_contamination_check": ",".join(str(v) for v in SX["max_contamination_check"]),
         "out_dir": soupx_dir(wc.ct_run) + "/rho",
@@ -218,6 +224,47 @@ rule soupx_adjust:
         _CT_SHELL
 
 
+# --- 4. re-cluster on the corrected counts ------------------------------------
+# Same script and settings as celltype_cluster, with four differences, all
+# passed as arguments (see the header of celltype_cluster.R):
+#   counts        soupx/counts/ instead of prep/counts/ (QC metrics stay raw)
+#   doublets      doublets_by_sort/ (per-sort rates) instead of doublets/
+#   minimum size  fail_below_floor: raw UMIs < min_floor_k x the floor
+#   output        <results_dir>/celltype_soupx/, beside the first pass
+# Full run only: it reuses the full run's prep/, doublets_by_sort/ and soupx/.
+SOUPX_RUN = "celltype_soupx"
+
+rule celltype_cluster_soupx:
+    input:
+        meta=ancient(RESULTS + "/celltype/prep/cell_meta.rds"),
+        counts=expand(soupx_dir("celltype") + "/counts/{sublib}.rds", sublib=SUBLIBS),
+        cells=expand(soupx_dir("celltype") + "/cells/{sublib}.tsv", sublib=SUBLIBS),
+        doublets=ancient(expand(RESULTS + "/celltype/doublets_by_sort/{sublib}.tsv", sublib=SUBLIBS)),
+        floors=expand(SOUP_DIR + "/{soup_sort}/barcode_summary.tsv", soup_sort=SOUP_SORTS),
+    output:
+        **ct_cluster_outputs(SOUPX_RUN),
+    params:
+        script=os.path.join(CT_SCRIPTS, "celltype_cluster.R"),
+        args=ct_cluster_args(
+            "celltype",
+            out_dir=ct_dir(SOUPX_RUN),
+            counts_dir=soupx_dir("celltype"),
+            doublet_dir=ct_dir("celltype") + "/doublets_by_sort",
+            floor_files=",".join(expand(SOUP_DIR + "/{s}/barcode_summary.tsv", s=SOUP_SORTS)),
+            min_floor_k=SX["min_floor_k"],
+            soupx_cells_dir=soupx_dir("celltype") + "/cells",
+        ),
+        **_CT_IMAGE,
+    threads: nthreads("celltype_cluster_soupx")
+    resources:
+        mem_mb=128000,
+        runtime=720,
+    log:
+        "logs/celltype/celltype_soupx/cluster.log",
+    shell:
+        _CT_SHELL
+
+
 # --- targets -----------------------------------------------------------------
 rule soup_profiles:
     input:
@@ -242,3 +289,8 @@ rule soupx:
 rule soupx_test:
     input:
         expand(soupx_dir("celltype_test") + "/cells/{sublib}.tsv", sublib=SUBLIBS),
+
+
+rule celltype_soupx:
+    input:
+        ct_dir(SOUPX_RUN) + "/cell_annotations.csv",

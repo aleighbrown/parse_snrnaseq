@@ -261,3 +261,12 @@ soupx_adjust:
     h_rt:   "6:00:00"
     tscratch: 5G
     submission_string: " "
+
+# The SoupX re-clustering: celltype_cluster.R on the same cells, so the same
+# reservation as celltype_cluster. 4 x 30G = 120G.
+celltype_cluster_soupx:
+    h_vmem: 30G
+    tmem:   30G
+    h_rt:   "12:00:00"
+    tscratch: 5G
+    submission_string: "-pe smp 4 -R y"
