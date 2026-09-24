@@ -13,7 +13,8 @@
 #     -> calculateContaminationFraction   (Poisson GLM, counts ~ offset(expected))
 #     -> <out_dir>/<sort>.tsv              rho + 95% CI, both exclusion modes
 #        <out_dir>/<sort>_breakdown.tsv    the same estimate by subclass /
-#                                          sublibrary / marker set
+#                                          sublibrary / marker set / gene /
+#                                          gene x subclass
 #        <out_dir>/<sort>_sensitivity.tsv  rho at several maximumContamination
 #        <out_dir>/<sort>_report.pdf
 #
@@ -33,6 +34,13 @@
 # The breakdown uses the same estimator as SoupX (for an intercept-only
 # Poisson GLM with an offset, the MLE is sum(observed) / sum(expected)), so
 # its pooled value reproduces SoupX's rho exactly -- checked below.
+#
+# Per gene. The marker genes are a fixed list in config (soupx.marker_sets),
+# chosen as abundant in the soup and not made by glia. A gene that glia DO
+# make weakly -- in every glial type alike -- would raise rho without making
+# the subclasses disagree or tripping the exclusion test. It shows up here
+# instead: each gene, on the same cells, should give about the same rho, and
+# one well above the rest should be dropped from the list.
 #
 # Sensitivity to maximumContamination. estimateNonExpressingCells() only
 # drops a cell whose marker counts exceed what maximumContamination x 100%
@@ -192,17 +200,40 @@ ci <- function(o, e) {
   r <- poisson.test(round(o), T = e)$conf.int
   list(low = r[1], high = r[2])
 }
+# Per gene, on the cells used for that gene's marker set.
+gene_long <- rbindlist(lapply(names(marker_sets), function(nm) {
+  cells_used <- rownames(chosen$use)[chosen$use[, nm]]
+  j <- match(cells_used, colnames(toc))
+  rbindlist(lapply(marker_sets[[nm]], function(g)
+    data.table(bc_wells = cells_used, gene = g,
+               obs = as.numeric(toc[g, j]),
+               exp = n_umis[j] * soup_df[g, "est"])))
+}))
+gene_long <- merge(gene_long, cand[, .(bc_wells, subclass = predicted.subclass)], by = "bc_wells")
+gene_long <- gene_long[exp > 0]
+
 breakdown <- rbind(
   used[, c(.(level = "subclass", n_cells = uniqueN(bc_wells), obs = sum(obs), exp = sum(exp),
              rho = sum(obs) / sum(exp)), ci(sum(obs), sum(exp))), by = .(group = subclass)],
   used[, c(.(level = "sublibrary", n_cells = uniqueN(bc_wells), obs = sum(obs), exp = sum(exp),
              rho = sum(obs) / sum(exp)), ci(sum(obs), sum(exp))), by = .(group = sublibrary)],
   used[, c(.(level = "marker_set", n_cells = uniqueN(bc_wells), obs = sum(obs), exp = sum(exp),
-             rho = sum(obs) / sum(exp)), ci(sum(obs), sum(exp))), by = .(group = set)])
+             rho = sum(obs) / sum(exp)), ci(sum(obs), sum(exp))), by = .(group = set)],
+  gene_long[, c(.(level = "gene", n_cells = uniqueN(bc_wells), obs = sum(obs), exp = sum(exp),
+                  rho = sum(obs) / sum(exp)), ci(sum(obs), sum(exp))), by = .(group = gene)],
+  gene_long[, c(.(level = "gene_subclass", n_cells = uniqueN(bc_wells), obs = sum(obs),
+                  exp = sum(exp), rho = sum(obs) / sum(exp)), ci(sum(obs), sum(exp))),
+            by = .(group = paste(gene, subclass, sep = " | "))])
 setcolorder(breakdown, c("level", "group"))
 breakdown[, sort := this_sort]
 print(breakdown)
 fwrite(breakdown, out("_breakdown.tsv"), sep = "\t")
+
+gene_rho <- breakdown[level == "gene"]
+step(sprintf("per-gene rho: %.4f (%s) to %.4f (%s); max / median = %.2f",
+             min(gene_rho$rho), gene_rho[which.min(rho), group],
+             max(gene_rho$rho), gene_rho[which.max(rho), group],
+             max(gene_rho$rho) / median(gene_rho$rho)))
 
 # --- sensitivity to maximumContamination (per-cell exclusion) ---------------
 mc_values <- sort(unique(c(1, as.numeric(csv("max_contamination_check")))), decreasing = TRUE)
@@ -252,7 +283,7 @@ fwrite(res, out(".tsv"), sep = "\t")
 # 5. Report
 # =============================================================================
 pdf(out("_report.pdf"), width = 9, height = 6)
-for (lv in c("subclass", "sublibrary", "marker_set")) {
+for (lv in c("subclass", "sublibrary", "marker_set", "gene")) {
   print(ggplot(breakdown[level == lv], aes(reorder(group, rho), rho)) +
           geom_hline(yintercept = chosen$rho, colour = "#A50F15") +
           geom_hline(yintercept = floor_rho, colour = "grey50", linetype = "dashed") +
@@ -282,6 +313,21 @@ print(ggplot(cell_tot, aes(exp, obs + 0.5, colour = use)) +
              title = paste0(this_sort, ": marker counts per cell"),
              subtitle = "red line = rho; dotted = 100% soup") +
         theme_minimal(base_size = 9))
+# Per gene within each subclass: a gene that one glial type makes stands out
+# in that facet only.
+gs <- breakdown[level == "gene_subclass"]
+gs[, c("gene", "subclass") := tstrsplit(group, " | ", fixed = TRUE)]
+print(ggplot(gs[n_cells >= 30], aes(reorder(gene, rho), rho)) +
+        geom_hline(yintercept = chosen$rho, colour = "#A50F15") +
+        geom_pointrange(aes(ymin = low, ymax = high), size = 0.3) +
+        coord_flip() +
+        facet_wrap(~subclass) +
+        scale_y_continuous(labels = function(x) paste0(100 * x, "%")) +
+        labs(x = NULL, y = "rho from this gene alone (95% CI)",
+             title = paste0(this_sort, ": rho per marker gene, by subclass"),
+             subtitle = "genes should agree with each other and with the red line; subclasses with >= 30 cells") +
+        theme_minimal(base_size = 9))
+
 # Sensitivity: rho as the exclusion threshold tightens, overall and by
 # subclass. Flat = robust; falling = carried by a doublet-like tail.
 print(ggplot(sens, aes(max_contamination, rho, colour = group)) +

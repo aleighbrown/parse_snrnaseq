@@ -286,8 +286,13 @@ celltype:
     # makes it; copy it in by hand, e.g.
     #   cp celltype/cell_annotations.csv celltype/first_pass_annotations.csv
     labels_file: first_pass_annotations.csv
-    # Genes no glial nucleus should express, all well represented in the soup
-    # (top_soup_genes.tsv). RBFOX3 is left out on purpose: whether K_negative
+    # Genes no glial nucleus should express. A FIXED, hand-picked list -- the
+    # pipeline does not choose them. Picked from soup_profile's
+    # top_soup_genes.tsv (abundant in the soup, so they carry signal) and
+    # prior biology (not made by astrocytes, oligodendrocytes or microglia;
+    # long genes glia share, e.g. RBFOX1 / NRXN1, left out). soupx_rho's
+    # per-gene breakdown checks the choice: every gene should give about the
+    # same rho. RBFOX3 is left out on purpose: whether K_negative
     # microglia carry NeuN is one of the questions, and using it here would
     # assume the answer.
     marker_sets:
