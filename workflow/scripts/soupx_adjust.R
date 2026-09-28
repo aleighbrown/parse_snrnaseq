@@ -18,8 +18,8 @@
 # doublet filters to the corrected counts exactly as it does to the raw ones.
 # Cells that were clustered in the frozen run are corrected at cluster level
 # (SoupX's recommended mode). Cells that were not -- unassigned donors, old
-# doublet calls, upper-bound QC fails -- have no cluster, and each is given
-# its own, i.e. corrected at cell level.
+# doublet calls, upper-bound QC fails -- have no cluster, and are corrected
+# at cell level, ADJ_CHUNK cells per call (see the loop for why).
 #
 # One SoupChannel per sort: each sort has its own soup and its own rho.
 # roundToInt uses stochastic rounding, so the seed is set per sort.
@@ -70,6 +70,20 @@ stopifnot(!anyNA(rho))
 # =============================================================================
 # SoupX, one channel per sort
 # =============================================================================
+ADJ_CHUNK <- 500L  # unclustered cells per cell-level adjustCounts call
+
+# One SoupChannel + adjustCounts. toc stands in for tod: the soup is
+# supplied, not estimated from it. clusters = FALSE -> cell level.
+soupx_run <- function(toc, soup_df, rho, clusters) {
+  sc <- SoupChannel(toc, toc, calcSoupProfile = FALSE)
+  sc <- setSoupProfile(sc, soup_df)
+  if (!isFALSE(clusters)) sc <- setClusters(sc, clusters)
+  sc <- setContaminationFraction(sc, rho, forceAccept = TRUE)
+  adj <- adjustCounts(sc, clusters = if (isFALSE(clusters)) FALSE else NULL,
+                      roundToInt = TRUE, verbose = 0)
+  as(adj, "CsparseMatrix")
+}
+
 pieces <- list()
 for (s in sorts) {
   k <- which(cell_sort == s)
@@ -79,19 +93,28 @@ for (s in sorts) {
   soup_df <- data.frame(est = prof$est, counts = prof$counts, row.names = prof$gene)
   stopifnot(identical(rownames(soup_df), rownames(toc)))
 
-  # toc stands in for tod: the soup is supplied, not estimated from it.
-  sc <- SoupChannel(toc, toc, calcSoupProfile = FALSE)
-  sc <- setSoupProfile(sc, soup_df)
-  sc <- setClusters(sc, setNames(cluster[k], colnames(toc)))
-  sc <- setContaminationFraction(sc, rho[[s]], forceAccept = TRUE)
-
   step(s, ": ", length(k), " cells (", sum(clustered[k]), " clustered), rho = ", signif(rho[[s]], 4))
   set.seed(seed)
-  adj <- adjustCounts(sc, roundToInt = TRUE, verbose = 1)
-  adj <- as(adj, "CsparseMatrix")
+  # Clustered cells in one call at cluster level; unclustered cells at cell
+  # level in chunks. adjustCounts' subtraction pulls each column out of a
+  # dgTMatrix (O(nnz) per column), so one call is quadratic in its columns:
+  # positive's ~7.6k unclustered cells as singleton clusters ran for hours.
+  kc <- colnames(toc)[clustered[k]]
+  ku <- colnames(toc)[!clustered[k]]
+  parts <- list()
+  if (length(kc)) {
+    parts[["clustered"]] <- soupx_run(toc[, kc, drop = FALSE], soup_df, rho[[s]],
+                                      clusters = setNames(cluster[k][clustered[k]], kc))
+  }
+  for (ch in split(ku, ceiling(seq_along(ku) / ADJ_CHUNK))) {
+    parts[[length(parts) + 1]] <- soupx_run(toc[, ch, drop = FALSE], soup_df, rho[[s]],
+                                            clusters = FALSE)
+  }
+  if (length(ku)) step(s, ": ", length(ku), " unclustered cells corrected at cell level")
+  adj <- do.call(cbind, unname(parts))[, colnames(toc), drop = FALSE]
   stopifnot(identical(dim(adj), dim(toc)), identical(colnames(adj), colnames(toc)))
   pieces[[s]] <- adj
-  rm(sc, toc, adj); invisible(gc())
+  rm(toc, adj, parts); invisible(gc())
 }
 
 out <- do.call(cbind, pieces)[, colnames(m), drop = FALSE]
