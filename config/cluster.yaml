@@ -256,10 +256,9 @@ soupx_rho:
 # that were never clustered are corrected one by one, which is the slow part.
 # Guess: 30-90 min, several GB; trim from the log's peak.
 soupx_adjust:
-    h_vmem: 24G
-    tmem:   24G
-    h_rt:   "6:00:00"
-    tscratch: 5G
+    h_vmem: 31G
+    tmem:   31G
+    h_rt:   "04:00:00"
     submission_string: " "
 
 # The SoupX re-clustering: celltype_cluster.R on the same cells, so the same
