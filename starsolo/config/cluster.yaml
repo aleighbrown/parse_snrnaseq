@@ -38,12 +38,14 @@ validate_extraction:
     h_rt:   "1:00:00"
     submission_string: " "
 
-# GRCh38 + GENCODE genomeGenerate: ~32 GB, 1-2 h. 8 x 8G = 64G.
+# GRCh38 + GENCODE genomeGenerate: ~32 GB RAM, 1-2 h on local disk. 8 x 8G = 64G.
+# Built in /scratch0 (tscratch is per job, not per slot): FASTA 3G + GTF 1.5G +
+# SA chunks ~30G + finished index ~30G at peak, so 100G.
 star_index:
     h_vmem: 8G
     tmem:   8G
     h_rt:   "12:00:00"
-    submission_string: "-pe smp 8 -R y"
+    submission_string: "-pe smp 8 -R y -l tscratch=100G"
 
 # Two STARsolo runs on 2M reads; mostly genome loading. 8 x 6G = 48G.
 strand_test:

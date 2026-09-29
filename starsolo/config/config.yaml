@@ -90,6 +90,9 @@ reference:
   # than this are fine.
   sjdb_overhang: 149
   genome_generate_ram_gb: 60
+  # Node-local disk the index is built on (needs -l tscratch in cluster.yaml);
+  # the finished index is copied to dir above.
+  scratch_root: /scratch0
   extra: ""
 
 # --- STAR / STARsolo ----------------------------------------------------------

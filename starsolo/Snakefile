@@ -347,8 +347,12 @@ if not REF_BUILT:
             gtf=ancient(REF["gtf"]),
         output:
             directory(REF_DIR),
+        # Built entirely on the node's local disk (qsub -l tscratch, see
+        # config/cluster.yaml), then copied to REF_DIR. Suffix-array sorting
+        # writes and re-reads ~30 GB of chunks; on /SAN it stalled for 24 h.
+        # /scratch0 vanishes with the job, so the copy-back is part of the rule.
         params:
-            tmp=TMP_ROOT + "/star_index",
+            scratch_root=REF.get("scratch_root", "/scratch0"),
             overhang=REF["sjdb_overhang"],
             ram=int(REF.get("genome_generate_ram_gb", 60) * 1e9),
             extra=REF.get("extra", ""),
@@ -358,26 +362,36 @@ if not REF_BUILT:
         shell:
             r"""
             """ + CHECK_STAR + r"""
-            rm -rf {params.tmp}
-            mkdir -p {params.tmp} {output}
+            exec > {log} 2>&1
+            SCR={params.scratch_root}/${{USER}}/${{JOB_ID:-local.$$}}.star_index
+            STAGE={output}.incoming.${{JOB_ID:-local.$$}}
+            trap 'rm -rf "$SCR"' EXIT
+            rm -rf "$SCR" "$STAGE"
+            mkdir -p "$SCR/genome"
+            echo "[star_index] $(hostname)  scratch=$SCR"
+            df -h {params.scratch_root}
+
             # STAR needs the GTF as plain text.
             case "{input.gtf}" in
-                *.gz) gzip -cd {input.gtf} > {params.tmp}/genes.gtf ;;
-                *)    ln -s "$(readlink -f {input.gtf})" {params.tmp}/genes.gtf ;;
+                *.gz) gzip -cd {input.gtf} > "$SCR/genes.gtf" ;;
+                *)    cp {input.gtf} "$SCR/genes.gtf" ;;
             esac
+            cp {input.fasta} "$SCR/genome.fa"
 
+            # --outTmpDir must not exist beforehand.
             "$STAR_BIN" --runMode genomeGenerate \
                 --runThreadN {threads} \
-                --genomeDir {output} \
-                --genomeFastaFiles {input.fasta} \
-                --sjdbGTFfile {params.tmp}/genes.gtf \
+                --genomeDir "$SCR/genome" \
+                --genomeFastaFiles "$SCR/genome.fa" \
+                --sjdbGTFfile "$SCR/genes.gtf" \
                 --sjdbOverhang {params.overhang} \
                 --limitGenomeGenerateRAM {params.ram} \
-                --outTmpDir {params.tmp}/_STARtmp \
-                --outFileNamePrefix {params.tmp}/ \
-                {params.extra} > {log} 2>&1
+                --outTmpDir "$SCR/_STARtmp" \
+                --outFileNamePrefix "$SCR/" \
+                {params.extra}
 
-            cp {params.tmp}/Log.out {output}/genomeGenerate.Log.out
+            test -s "$SCR/genome/SA" && test -s "$SCR/genome/genomeParameters.txt"
+            cp "$SCR/Log.out" "$SCR/genome/genomeGenerate.Log.out"
             # Provenance stamp: this index is shared, so record what built it.
             {{
                 echo "built:          $(date -Iseconds)"
@@ -388,8 +402,18 @@ if not REF_BUILT:
                 echo "sjdbOverhang:   {params.overhang}"
                 echo "extra:          {params.extra}"
                 echo "workflow:       parse_snrnaseq/starsolo"
-            }} > {output}/build_provenance.txt
-            rm -rf {params.tmp}
+            }} > "$SCR/genome/build_provenance.txt"
+            du -sh "$SCR/genome"
+
+            # Copy back to a sibling staging dir, check every file arrived at
+            # full size, then swap it in, so REF_DIR is never half-written.
+            echo "[star_index] copying to $STAGE  $(date)"
+            cp -r "$SCR/genome" "$STAGE"
+            diff <(cd "$SCR/genome" && find . -type f -printf '%P %s\n' | sort) \
+                 <(cd "$STAGE"      && find . -type f -printf '%P %s\n' | sort)
+            rm -rf {output}
+            mv "$STAGE" {output}
+            echo "[star_index] done  $(date)"
             """
 
 
