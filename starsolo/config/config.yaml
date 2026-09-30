@@ -89,7 +89,10 @@ reference:
   # read length - 1. The layout step reports fq1's real length; reads shorter
   # than this are fine.
   sjdb_overhang: 149
-  genome_generate_ram_gb: 60
+  # RAM STAR may use while sorting the suffix array (human needs ~31, STAR's
+  # default). Keep well under the job's h_vmem total (cluster.yaml): at 60 of
+  # 64G the sort hung with no chunk written and was killed at h_rt.
+  genome_generate_ram_gb: 32
   # Node-local disk the index is built on (needs -l tscratch in cluster.yaml);
   # the finished index is copied to dir above.
   scratch_root: /scratch0
@@ -139,7 +142,7 @@ split:
 threads:
   default: 1
   extract_reads: 4
-  star_index: 8
+  star_index: 4
   strand_test: 8
   star_pass1: 8
   star_solo: 8
