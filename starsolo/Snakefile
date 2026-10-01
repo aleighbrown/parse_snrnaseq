@@ -152,7 +152,9 @@ REF_BUILT = os.path.exists(os.path.join(REF_DIR, "SA")) and os.path.exists(
 
 
 # --- targets -----------------------------------------------------------------
-localrules: all, tools, reference, layout, extract, strand, split, bams, junctions, splicing
+# Targets, plus small pandas steps (seconds, <2 GB) that run on the login node
+# rather than waiting in the queue.
+localrules: all, tools, reference, layout, extract, strand, split, bams, junctions, splicing, make_whitelist, validate_extraction, pool_junctions, group_table
 
 rule all:
     input:
