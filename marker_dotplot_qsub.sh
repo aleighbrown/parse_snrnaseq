@@ -5,9 +5,14 @@
 #$ -o logs/marker_dotplot/
 #$ -pe smp 2
 #$ -R y
-#$ -l h_vmem=36G,tmem=36G,h_rt=4:00:00,tscratch=5G
-# 2 x 36G = 72G. The ~30 GB seurat_harmony.rds is read whole, then cut down to
-# the marker genes and dropped; the plots themselves are small.
+#$ -l h_vmem=14G,tmem=14G,h_rt=2:00:00,tscratch=2G
+# 2 x 14G = 28G. Peak is readRDS of the whole object: it was saved with
+# compress = FALSE, so it needs about its file size in RAM (15 GB for
+# celltype_soupx), plus a few GB for the marker-gene subset. Everything after
+# that is small. If the rds grows, re-check with
+#   ls -lh <run_dir>/seurat_harmony.rds
+# and keep 2 x h_vmem >= ~1.4 x that size. The script is single-threaded;
+# the 2 slots are only there to split the memory request.
 #
 # Canonical marker dot plots by Azimuth predicted.subclass x FANS sort, on the
 # SoupX-corrected clustering. Same Singularity image + R library as the
