@@ -391,7 +391,12 @@ if not REF_BUILT:
                 {params.extra}
 
             test -s "$SCR/genome/SA" && test -s "$SCR/genome/genomeParameters.txt"
-            cp "$SCR/Log.out" "$SCR/genome/genomeGenerate.Log.out"
+            # genomeGenerate moves Log.out into --genomeDir when it can.
+            if [ -f "$SCR/genome/Log.out" ]; then
+                mv "$SCR/genome/Log.out" "$SCR/genome/genomeGenerate.Log.out"
+            elif [ -f "$SCR/Log.out" ]; then
+                cp "$SCR/Log.out" "$SCR/genome/genomeGenerate.Log.out"
+            fi
             # Provenance stamp: this index is shared, so record what built it.
             {{
                 echo "built:          $(date -Iseconds)"
