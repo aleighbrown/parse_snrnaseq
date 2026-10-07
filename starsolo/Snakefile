@@ -668,6 +668,10 @@ rule split_bam:
     shell:
         r"""
         set -euo pipefail
+        command -v sinto > /dev/null || {{
+            echo "sinto not on PATH: pip install sinto into a tools.bin_dirs env (config.yaml)" > {log}
+            exit 1
+        }}
         mkdir -p {output.bams}
         sinto filterbarcodes \
             -b {input.bam} \

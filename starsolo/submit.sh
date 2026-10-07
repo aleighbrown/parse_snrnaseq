@@ -7,6 +7,7 @@
 #   source submit.sh reference       # STAR index only
 #   source submit.sh split           # donor x sort BAMs
 #   source submit.sh all rerun       # tag this submission "all_rerun"
+#   SM_JOBS=12 source submit.sh      # up to 12 cluster jobs at once (default 4)
 #
 # SOURCED, not qsub-ed, so no `set -e` / `set -u` / `exit` (they would act on
 # your interactive shell). Needs snakemake 7.x on PATH.
@@ -38,7 +39,7 @@ snakemake "${SM_TARGET}" \
 --jobscript cluster_qsub.sh \
 --cluster-config config/cluster.yaml \
 --cluster-sync "qsub -l tmem={cluster.tmem},h_vmem={cluster.h_vmem},h_rt={cluster.h_rt} -o ${SM_FOLDER} {cluster.submission_string}" \
--j 4 \
+-j "${SM_JOBS:-4}" \
 --nolock \
 --rerun-incomplete \
 --latency-wait 100 \
